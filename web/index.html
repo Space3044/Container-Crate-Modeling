@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ULD 装箱可视化</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Single ULD Profile Packing</p>
+        <h1>ULD 装箱可视化</h1>
+      </div>
+      <div class="header-actions">
+        <button id="loadSampleButton" type="button" class="secondary-button">载入示例</button>
+        <button id="calculateButton" type="button" class="primary-button">计算装箱</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="panel input-panel" aria-labelledby="input-title">
+        <h2 id="input-title">输入参数</h2>
+
+        <div class="field-grid">
+          <label>
+            ULD ID
+            <input id="uldIdInput" type="text" value="ULD-001" />
+          </label>
+          <label>
+            ULD 长度 x
+            <input id="uldLengthInput" type="number" min="1" step="1" value="300" />
+          </label>
+        </div>
+
+        <label class="stacked-field">
+          y-z 截面五边形点
+          <textarea id="crossSectionInput" rows="7">[[0,0],[220,0],[220,110],[170,160],[0,160]]</textarea>
+        </label>
+
+        <div class="section-heading">
+          <h3>箱子</h3>
+          <button id="addBoxButton" type="button" class="secondary-button small-button">添加箱子</button>
+        </div>
+
+        <div class="table-scroll">
+          <table class="box-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>长</th>
+                <th>宽</th>
+                <th>高</th>
+                <th>数量</th>
+                <th>旋转</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="boxTableBody"></tbody>
+          </table>
+        </div>
+
+        <p id="errorMessage" class="error-message" role="alert"></p>
+      </section>
+
+      <section class="panel viewer-panel" aria-labelledby="viewer-title">
+        <div class="viewer-header">
+          <div>
+            <h2 id="viewer-title">最优解 3D 视图</h2>
+            <p>鼠标左键拖动旋转，滚轮缩放，Shift 拖动平移，双击重置视角。</p>
+          </div>
+          <div class="viewer-actions" aria-label="视角切换">
+            <button id="isometricViewButton" type="button" class="secondary-button small-button">等轴</button>
+            <button id="topViewButton" type="button" class="secondary-button small-button">俯视</button>
+            <button id="sideViewButton" type="button" class="secondary-button small-button">侧视</button>
+            <button id="sectionViewButton" type="button" class="secondary-button small-button">截面</button>
+            <button id="resetViewButton" type="button" class="secondary-button small-button">重置</button>
+          </div>
+        </div>
+        <canvas id="sceneCanvas" aria-label="ULD 装箱三维可视化画布"></canvas>
+        <div class="slice-control">
+          <label for="sliceSlider">x 切片位置 <span id="sliceValue">0</span></label>
+          <p class="slice-note">x 从 ULD 前端沿长度方向量起。这个滑块只改变截面查看，不改变装箱结果。</p>
+          <input id="sliceSlider" type="range" min="0" max="300" step="1" value="0" />
+        </div>
+        <div class="projection-grid" aria-label="二维投影视图">
+          <article class="projection-card">
+            <div class="projection-title">俯视 x-y</div>
+            <canvas id="topViewCanvas" aria-label="x-y 俯视图"></canvas>
+          </article>
+          <article class="projection-card">
+            <div class="projection-title">侧视 x-z</div>
+            <canvas id="sideViewCanvas" aria-label="x-z 侧视图"></canvas>
+          </article>
+          <article class="projection-card">
+            <div class="projection-title">截面 y-z：显示当前 x 切片穿过的箱子</div>
+            <canvas id="sectionViewCanvas" aria-label="y-z 截面图"></canvas>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel result-panel" aria-labelledby="result-title">
+        <h2 id="result-title">计算结果</h2>
+        <div id="summaryCards" class="summary-grid"></div>
+
+        <h3>已装箱类型</h3>
+        <div id="loadedList" class="result-list muted-text">暂无</div>
+
+        <h3>未装箱</h3>
+        <div id="unloadedList" class="result-list muted-text">暂无</div>
+
+        <h3>当前选中箱子</h3>
+        <div id="selectedBoxDetails" class="selected-box-card muted-text">点击 3D 视图、三视图或坐标表中的箱子查看位置范围。</div>
+
+        <h3>装箱坐标</h3>
+        <div class="table-scroll placements-scroll">
+          <table class="placements-table">
+            <thead>
+              <tr>
+                <th>实例</th>
+                <th>x</th>
+                <th>y</th>
+                <th>z</th>
+                <th>L</th>
+                <th>W</th>
+                <th>H</th>
+              </tr>
+            </thead>
+            <tbody id="placementsTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

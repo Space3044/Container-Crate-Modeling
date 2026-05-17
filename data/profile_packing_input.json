@@ -1,0 +1,32 @@
+{
+  "uld": {
+    "id": "ULD-001",
+    "length": 300,
+    "cross_section": [
+      [0, 0],
+      [220, 0],
+      [220, 110],
+      [170, 160],
+      [0, 160]
+    ]
+  },
+  "boxes": [
+    {
+      "id": "BOX-A",
+      "length": 60,
+      "width": 40,
+      "height": 30,
+      "quantity": 10,
+      "rotatable": true
+    },
+    {
+      "id": "BOX-B",
+      "length": 100,
+      "width": 80,
+      "height": 50,
+      "quantity": 4,
+      "rotatable": true
+    }
+  ],
+  "objective": "maximize_volume"
+}
