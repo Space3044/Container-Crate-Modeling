@@ -29,7 +29,20 @@ def pack_packing(problem: ProfilePackingInput | MultiContainerPackingInput) -> P
 
 
 def pack_profile(problem: ProfilePackingInput) -> ProfilePackingResult:
-    expanded_boxes = _expand_boxes(problem.boxes)
+    best_result: ProfilePackingResult | None = None
+    for expanded_boxes in _expanded_box_orders(problem.boxes):
+        result = _pack_profile_ordered(problem, expanded_boxes)
+        if best_result is None or _result_score(result, problem.objective) > _result_score(best_result, problem.objective):
+            best_result = result
+    if best_result is None:
+        return _pack_profile_ordered(problem, [])
+    return best_result
+
+
+def _pack_profile_ordered(
+    problem: ProfilePackingInput,
+    expanded_boxes: list[tuple[BoxSpec, str]],
+) -> ProfilePackingResult:
     placements: list[BoxPlacement] = []
     candidate_points: list[Point3D] = [(0, 0, 0)]
     unloaded_counter: Counter[str] = Counter()
@@ -67,6 +80,12 @@ def pack_profile(problem: ProfilePackingInput) -> ProfilePackingResult:
         validation_errors=validation_errors,
         loaded=loaded,
     )
+
+
+def _result_score(result: ProfilePackingResult, objective: str) -> tuple[float, int, float]:
+    if objective == "maximize_count":
+        return (result.loaded_count, result.used_volume, -result.unloaded_count)
+    return (result.used_volume, result.loaded_count, -result.unloaded_count)
 
 
 def pack_multi_profile(problem: MultiContainerPackingInput) -> MultiContainerPackingResult:
@@ -179,12 +198,27 @@ def placements_overlap(first: BoxPlacement, second: BoxPlacement) -> bool:
     )
 
 
-def _expand_boxes(boxes: list[BoxSpec]) -> list[tuple[BoxSpec, str]]:
-    expanded: list[tuple[BoxSpec, str]] = []
-    for box in sorted(boxes, key=lambda item: (-item.volume, item.id)):
-        for index in range(1, box.quantity + 1):
-            expanded.append((box, f"{box.id}-{index:03d}"))
-    return expanded
+def _expanded_box_orders(boxes: list[BoxSpec]) -> list[list[tuple[BoxSpec, str]]]:
+    order_keys = [
+        lambda item: (-item.volume, item.id),
+        lambda item: (item.volume, item.id),
+        lambda item: (-item.length, -item.volume, item.id),
+        lambda item: (item.length, -item.volume, item.id),
+        lambda item: (-(item.width * item.height), -item.volume, item.id),
+        lambda item: (-item.height, -item.volume, item.id),
+    ]
+    orders: list[list[tuple[BoxSpec, str]]] = []
+    seen: set[tuple[str, ...]] = set()
+    for order_key in order_keys:
+        expanded: list[tuple[BoxSpec, str]] = []
+        for box in sorted(boxes, key=order_key):
+            for index in range(1, box.quantity + 1):
+                expanded.append((box, f"{box.id}-{index:03d}"))
+        signature = tuple(instance_id for _, instance_id in expanded)
+        if signature not in seen:
+            seen.add(signature)
+            orders.append(expanded)
+    return orders
 
 
 def _find_placement(
@@ -194,7 +228,8 @@ def _find_placement(
     placements: list[BoxPlacement],
     candidate_points: list[Point3D],
 ) -> BoxPlacement | None:
-    for x, y, z in sorted(set(candidate_points), key=lambda point: (point[2], point[1], point[0])):
+    candidates: list[BoxPlacement] = []
+    for x, y, z in set(candidate_points):
         for length, width, height in _orientation_options(box):
             placement = BoxPlacement(
                 box_id=box.id,
@@ -207,8 +242,81 @@ def _find_placement(
                 height=height,
             )
             if _placement_is_valid(problem, placement, placements):
-                return placement
-    return None
+                candidates.append(placement)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda placement: _placement_score(problem, placements, placement))
+
+
+def _placement_score(
+    problem: ProfilePackingInput,
+    placements: list[BoxPlacement],
+    placement: BoxPlacement,
+) -> tuple[float, float, float, float, int, float, float, float]:
+    max_x, max_y, max_z = _bounding_extents([*placements, placement])
+    bounding_volume = max_x * max_y * max_z
+    return (
+        bounding_volume,
+        max_z,
+        max_y,
+        max_x,
+        -_contact_count(problem, placements, placement),
+        placement.z,
+        placement.y,
+        placement.x,
+    )
+
+
+def _bounding_extents(placements: list[BoxPlacement]) -> Point3D:
+    return (
+        max((placement.x + placement.length for placement in placements), default=0),
+        max((placement.y + placement.width for placement in placements), default=0),
+        max((placement.z + placement.height for placement in placements), default=0),
+    )
+
+
+def _contact_count(problem: ProfilePackingInput, placements: list[BoxPlacement], placement: BoxPlacement) -> int:
+    contacts = 0
+    max_y = max(y for y, _ in problem.uld.cross_section)
+    max_z = max(z for _, z in problem.uld.cross_section)
+    if placement.x == 0:
+        contacts += 1
+    if placement.y == 0:
+        contacts += 1
+    if placement.z == 0:
+        contacts += 1
+    if placement.x + placement.length == problem.uld.length:
+        contacts += 1
+    if placement.y + placement.width == max_y:
+        contacts += 1
+    if placement.z + placement.height == max_z:
+        contacts += 1
+
+    for existing in placements:
+        contacts += _face_contact_count(placement, existing)
+    return contacts
+
+
+def _face_contact_count(first: BoxPlacement, second: BoxPlacement) -> int:
+    contacts = 0
+    x_faces_touch = first.x == second.x + second.length or second.x == first.x + first.length
+    y_faces_touch = first.y == second.y + second.width or second.y == first.y + first.width
+    z_faces_touch = first.z == second.z + second.height or second.z == first.z + first.height
+    x_ranges_overlap = _ranges_overlap(first.x, first.x + first.length, second.x, second.x + second.length)
+    y_ranges_overlap = _ranges_overlap(first.y, first.y + first.width, second.y, second.y + second.width)
+    z_ranges_overlap = _ranges_overlap(first.z, first.z + first.height, second.z, second.z + second.height)
+
+    if x_faces_touch and y_ranges_overlap and z_ranges_overlap:
+        contacts += 1
+    if y_faces_touch and x_ranges_overlap and z_ranges_overlap:
+        contacts += 1
+    if z_faces_touch and x_ranges_overlap and y_ranges_overlap:
+        contacts += 1
+    return contacts
+
+
+def _ranges_overlap(first_start: float, first_end: float, second_start: float, second_end: float) -> bool:
+    return first_start < second_end and first_end > second_start
 
 
 def _orientation_options(box: BoxSpec) -> list[tuple[float, float, float]]:

@@ -45,6 +45,52 @@ class ProfilePackerTests(unittest.TestCase):
         self.assertEqual(result.unloaded[0].box_id, "BOX-A")
         self.assertEqual(result.unloaded[0].quantity, 1)
 
+    def test_pack_profile_tries_multiple_box_orders_to_improve_used_volume(self):
+        problem = ProfilePackingInput(
+            uld=ULDProfile(
+                id="ULD-001",
+                length=9,
+                cross_section=[(0, 0), (5, 0), (5, 7), (0, 7)],
+            ),
+            boxes=[
+                BoxSpec(id="A", length=4, width=3, height=6, quantity=3, rotatable=False),
+                BoxSpec(id="B", length=7, width=3, height=5, quantity=2, rotatable=False),
+                BoxSpec(id="C", length=7, width=4, height=4, quantity=2, rotatable=False),
+            ],
+        )
+
+        result = pack_profile(problem)
+
+        self.assertEqual(result.loaded_count, 2)
+        self.assertEqual(result.used_volume, 144)
+        self.assertEqual([(item.box_id, item.quantity) for item in result.loaded], [("A", 2)])
+        self.assertTrue(result.validation_passed)
+
+    def test_pack_profile_scores_candidate_positions_and_orientations(self):
+        problem = ProfilePackingInput(
+            uld=ULDProfile(
+                id="ULD-001",
+                length=9,
+                cross_section=[(0, 0), (9, 0), (9, 6), (0, 6)],
+            ),
+            boxes=[
+                BoxSpec(id="A", length=8, width=9, height=3, quantity=1, rotatable=True),
+                BoxSpec(id="B", length=3, width=2, height=5, quantity=3, rotatable=True),
+                BoxSpec(id="C", length=2, width=5, height=6, quantity=3, rotatable=True),
+                BoxSpec(id="D", length=6, width=4, height=2, quantity=3, rotatable=True),
+            ],
+        )
+
+        result = pack_profile(problem)
+
+        self.assertEqual(result.loaded_count, 9)
+        self.assertEqual(result.used_volume, 414)
+        self.assertEqual(
+            [(item.box_id, item.quantity) for item in result.loaded],
+            [("B", 3), ("C", 3), ("D", 3)],
+        )
+        self.assertTrue(result.validation_passed)
+
 
 if __name__ == "__main__":
     unittest.main()
