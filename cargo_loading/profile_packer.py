@@ -7,14 +7,25 @@ from cargo_loading.profile_geometry import polygon_area, rectangle_inside_polygo
 from cargo_loading.profile_models import (
     BoxPlacement,
     BoxSpec,
+    ContainerPackingResult,
+    ContainerSpec,
     LoadedBox,
+    MultiContainerPackingInput,
+    MultiContainerPackingResult,
     ProfilePackingInput,
     ProfilePackingResult,
+    ULDProfile,
     UnloadedBox,
 )
 
 
 Point3D = tuple[float, float, float]
+
+
+def pack_packing(problem: ProfilePackingInput | MultiContainerPackingInput) -> ProfilePackingResult | MultiContainerPackingResult:
+    if isinstance(problem, MultiContainerPackingInput):
+        return pack_multi_profile(problem)
+    return pack_profile(problem)
 
 
 def pack_profile(problem: ProfilePackingInput) -> ProfilePackingResult:
@@ -58,6 +69,72 @@ def pack_profile(problem: ProfilePackingInput) -> ProfilePackingResult:
     )
 
 
+def pack_multi_profile(problem: MultiContainerPackingInput) -> MultiContainerPackingResult:
+    remaining = {box.id: box.quantity for box in problem.boxes}
+    box_by_id = {box.id: box for box in problem.boxes}
+    container_results: list[ContainerPackingResult] = []
+
+    for container, container_id in _expand_containers(problem.containers):
+        remaining_boxes = [
+            BoxSpec(
+                id=box.id,
+                length=box.length,
+                width=box.width,
+                height=box.height,
+                quantity=remaining[box.id],
+                rotatable=box.rotatable,
+            )
+            for box in problem.boxes
+            if remaining[box.id] > 0
+        ]
+        single_result = pack_profile(
+            ProfilePackingInput(
+                uld=ULDProfile(id=container_id, length=container.length, cross_section=container.cross_section),
+                boxes=remaining_boxes,
+                objective=problem.objective,
+            )
+        )
+        for loaded in single_result.loaded:
+            remaining[loaded.box_id] -= loaded.quantity
+        container_results.append(
+            ContainerPackingResult(
+                container_id=container_id,
+                container_type=container.id,
+                result=single_result,
+            )
+        )
+
+    unloaded = [
+        UnloadedBox(box_id=box_id, quantity=quantity, reason="no feasible space across containers")
+        for box_id, quantity in sorted(remaining.items())
+        if quantity > 0
+    ]
+    loaded = [
+        LoadedBox(box_id=box_id, quantity=box_by_id[box_id].quantity - quantity)
+        for box_id, quantity in sorted(remaining.items())
+        if box_by_id[box_id].quantity - quantity > 0
+    ]
+    validation_errors = [
+        f"{container.container_id}: {error}"
+        for container in container_results
+        for error in container.result.validation_errors
+    ]
+    used_volume = sum(container.result.used_volume for container in container_results)
+    container_volume = sum(container.result.uld_volume for container in container_results)
+    return MultiContainerPackingResult(
+        loaded_count=sum(item.quantity for item in loaded),
+        unloaded_count=sum(item.quantity for item in unloaded),
+        used_volume=used_volume,
+        container_volume=container_volume,
+        volume_utilization=used_volume / container_volume if container_volume else 0,
+        containers=container_results,
+        loaded=loaded,
+        unloaded=unloaded,
+        validation_passed=not validation_errors,
+        validation_errors=validation_errors,
+    )
+
+
 def validate_profile_packing(problem: ProfilePackingInput, placements: list[BoxPlacement]) -> list[str]:
     errors: list[str] = []
     for placement in placements:
@@ -79,6 +156,16 @@ def validate_profile_packing(problem: ProfilePackingInput, placements: list[BoxP
             if placements_overlap(first, second):
                 errors.append(f"{first.instance_id} overlaps {second.instance_id}")
     return errors
+
+
+def _expand_containers(containers: list[ContainerSpec]) -> list[tuple[ContainerSpec, str]]:
+    expanded: list[tuple[ContainerSpec, str]] = []
+    counters: Counter[str] = Counter()
+    for container in containers:
+        for _ in range(container.quantity):
+            counters[container.id] += 1
+            expanded.append((container, f"{container.id}-{counters[container.id]:03d}"))
+    return expanded
 
 
 def placements_overlap(first: BoxPlacement, second: BoxPlacement) -> bool:

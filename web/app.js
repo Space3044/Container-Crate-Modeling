@@ -1,15 +1,18 @@
 const fallbackInput = {
-  uld: {
-    id: "ULD-001",
-    length: 300,
-    cross_section: [
-      [0, 0],
-      [220, 0],
-      [220, 110],
-      [170, 160],
-      [0, 160],
-    ],
-  },
+  containers: [
+    {
+      id: "ULD",
+      length: 300,
+      quantity: 1,
+      cross_section: [
+        [0, 0],
+        [220, 0],
+        [220, 110],
+        [170, 160],
+        [0, 160],
+      ],
+    },
+  ],
   boxes: [
     { id: "BOX-A", length: 60, width: 40, height: 30, quantity: 10, rotatable: true },
     { id: "BOX-B", length: 100, width: 80, height: 50, quantity: 4, rotatable: true },
@@ -22,6 +25,7 @@ const AXIS_EXTENSION_FACTOR = 1.18;
 const state = {
   input: structuredClone(fallbackInput),
   result: null,
+  selectedContainerId: null,
   selectedInstanceId: null,
   sliceX: 0,
   camera: {
@@ -59,9 +63,9 @@ async function init() {
 }
 
 function cacheElements() {
-  elements.uldId = document.getElementById("uldIdInput");
-  elements.uldLength = document.getElementById("uldLengthInput");
-  elements.crossSection = document.getElementById("crossSectionInput");
+  elements.containerTableBody = document.getElementById("containerTableBody");
+  elements.addContainerButton = document.getElementById("addContainerButton");
+  elements.containerSelector = document.getElementById("containerSelector");
   elements.boxTableBody = document.getElementById("boxTableBody");
   elements.addBoxButton = document.getElementById("addBoxButton");
   elements.calculateButton = document.getElementById("calculateButton");
@@ -86,8 +90,10 @@ function cacheElements() {
 }
 
 function bindEvents() {
+  elements.addContainerButton.addEventListener("click", () => addContainerRow());
   elements.addBoxButton.addEventListener("click", () => addBoxRow());
   elements.calculateButton.addEventListener("click", calculatePacking);
+  elements.containerSelector.addEventListener("change", () => selectContainer(elements.containerSelector.value));
   elements.loadSampleButton.addEventListener("click", async () => {
     await loadSample();
     await calculatePacking();
@@ -129,21 +135,83 @@ async function loadSample() {
     if (!response.ok) {
       throw new Error("sample api unavailable");
     }
-    state.input = await response.json();
+    state.input = normalizeInput(await readJsonResponse(response));
   } catch {
     state.input = structuredClone(fallbackInput);
   }
   writeInputToForm(state.input);
-  configureSliceControl(state.input.uld.length);
+  configureSliceControl(state.input.containers[0].length);
   clearError();
 }
 
 function writeInputToForm(input) {
-  elements.uldId.value = input.uld.id;
-  elements.uldLength.value = input.uld.length;
-  elements.crossSection.value = JSON.stringify(input.uld.cross_section);
+  const normalized = normalizeInput(input);
+  elements.containerTableBody.innerHTML = "";
+  normalized.containers.forEach((container) => addContainerRow(container));
   elements.boxTableBody.innerHTML = "";
-  input.boxes.forEach((box) => addBoxRow(box));
+  normalized.boxes.forEach((box) => addBoxRow(box));
+}
+
+async function readJsonResponse(response) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (text.trim().startsWith("<")) {
+      throw new Error("接口返回了 HTML。请用 python -m cargo_loading.cli serve-profile 启动页面，不要直接打开 web/index.html 或普通静态服务器。");
+    }
+    throw new Error("接口返回的内容不是 JSON。");
+  }
+}
+
+function normalizeInput(input) {
+  if (Array.isArray(input?.containers)) {
+    return {
+      containers: input.containers.map((container) => ({
+        id: String(container.id ?? "ULD"),
+        length: Number(container.length),
+        quantity: Number(container.quantity ?? 1),
+        cross_section: container.cross_section.map(([y, z]) => [Number(y), Number(z)]),
+      })),
+      boxes: input.boxes ?? [],
+      objective: input.objective ?? "maximize_volume",
+    };
+  }
+  if (input?.uld) {
+    return {
+      containers: [
+        {
+          id: input.uld.id,
+          length: input.uld.length,
+          quantity: 1,
+          cross_section: input.uld.cross_section,
+        },
+      ],
+      boxes: input.boxes ?? [],
+      objective: input.objective ?? "maximize_volume",
+    };
+  }
+  return structuredClone(fallbackInput);
+}
+
+function addContainerRow(container = {}) {
+  const row = document.createElement("tr");
+  const crossSection = container.cross_section ?? [
+    [0, 0],
+    [220, 0],
+    [220, 110],
+    [170, 160],
+    [0, 160],
+  ];
+  row.innerHTML = `
+    <td><input class="container-id" type="text" value="${escapeAttribute(container.id ?? "ULD")}" aria-label="ULD ID" /></td>
+    <td><input class="container-length" type="number" min="1" step="1" value="${container.length ?? 300}" aria-label="ULD 长度" /></td>
+    <td><input class="container-quantity" type="number" min="1" step="1" value="${container.quantity ?? 1}" aria-label="ULD 数量" /></td>
+    <td><textarea class="container-cross-section" rows="3" aria-label="ULD y-z 截面点">${escapeHtml(JSON.stringify(crossSection))}</textarea></td>
+    <td><button class="icon-button" type="button" aria-label="删除 ULD">×</button></td>
+  `;
+  row.querySelector("button").addEventListener("click", () => row.remove());
+  elements.containerTableBody.appendChild(row);
 }
 
 function addBoxRow(box = {}) {
@@ -171,19 +239,17 @@ async function calculatePacking() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     });
-    const data = await response.json();
+    const data = await readJsonResponse(response);
     if (!response.ok) {
       throw new Error(data.error || "计算失败");
     }
     state.input = input;
     state.result = data.result;
-    state.selectedInstanceId = data.result.placements[0]?.instance_id ?? null;
-    configureSliceControl(input.uld.length);
-    if (state.selectedInstanceId) {
-      syncSliceToSelectedPlacement();
-    }
+    state.selectedContainerId = null;
+    state.selectedInstanceId = null;
+    renderContainerSelector(data.result);
     renderResult(data.result);
-    drawAllViews();
+    selectContainer(elements.containerSelector.value, { preserveSelection: false });
   } catch (error) {
     showError(error.message);
   } finally {
@@ -192,18 +258,35 @@ async function calculatePacking() {
 }
 
 function readInputFromForm() {
-  const uldLength = readPositiveNumber(elements.uldLength.value, "ULD 长度");
-  const crossSection = JSON.parse(elements.crossSection.value);
-  if (!Array.isArray(crossSection) || crossSection.length < 3) {
-    throw new Error("y-z 截面至少需要 3 个点");
-  }
-  crossSection.forEach((point, index) => {
-    if (!Array.isArray(point) || point.length !== 2 || point.some((value) => !Number.isFinite(Number(value)))) {
-      throw new Error(`截面点 ${index + 1} 必须是 [y,z] 数组`);
-    }
-  });
+  return {
+    containers: readContainersFromForm(),
+    boxes: readBoxesFromForm(),
+    objective: "maximize_volume",
+  };
+}
 
-  const boxes = [...elements.boxTableBody.querySelectorAll("tr")].map((row, index) => {
+function readContainersFromForm() {
+  const containers = [...elements.containerTableBody.querySelectorAll("tr")].map((row, index) => {
+    const id = row.querySelector(".container-id").value.trim();
+    if (!id) {
+      throw new Error(`第 ${index + 1} 行 ULD 缺少 ID`);
+    }
+    const crossSection = validateCrossSection(row.querySelector(".container-cross-section").value, `${id} 截面`);
+    return {
+      id,
+      length: readPositiveNumber(row.querySelector(".container-length").value, `${id} 长度`),
+      quantity: readPositiveInteger(row.querySelector(".container-quantity").value, `${id} 数量`),
+      cross_section: crossSection,
+    };
+  });
+  if (containers.length === 0) {
+    throw new Error("至少需要 1 个 ULD");
+  }
+  return containers;
+}
+
+function readBoxesFromForm() {
+  return [...elements.boxTableBody.querySelectorAll("tr")].map((row, index) => {
     const id = row.querySelector(".box-id").value.trim();
     if (!id) {
       throw new Error(`第 ${index + 1} 行箱子缺少 ID`);
@@ -217,22 +300,38 @@ function readInputFromForm() {
       rotatable: row.querySelector(".box-rotatable").checked,
     };
   });
+}
 
-  return {
-    uld: {
-      id: elements.uldId.value.trim() || "ULD-001",
-      length: uldLength,
-      cross_section: crossSection.map(([y, z]) => [Number(y), Number(z)]),
-    },
-    boxes,
-    objective: "maximize_volume",
-  };
+function validateCrossSection(rawValue, name) {
+  let crossSection;
+  try {
+    crossSection = JSON.parse(rawValue);
+  } catch {
+    throw new Error(`${name} 必须是 JSON 数组`);
+  }
+  if (!Array.isArray(crossSection) || crossSection.length < 3) {
+    throw new Error(`${name} 至少需要 3 个点`);
+  }
+  crossSection.forEach((point, index) => {
+    if (!Array.isArray(point) || point.length !== 2 || point.some((value) => !Number.isFinite(Number(value)))) {
+      throw new Error(`${name} 的第 ${index + 1} 个点必须是 [y,z] 数组`);
+    }
+  });
+  return crossSection.map(([y, z]) => [Number(y), Number(z)]);
 }
 
 function readPositiveNumber(value, name) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) {
     throw new Error(`${name} 必须大于 0`);
+  }
+  return number;
+}
+
+function readPositiveInteger(value, name) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error(`${name} 必须是正整数`);
   }
   return number;
 }
@@ -258,6 +357,94 @@ function updateSliceValue() {
   elements.sliceValue.textContent = formatNumber(state.sliceX);
 }
 
+function renderContainerSelector(result) {
+  const containers = result.containers ?? [{ container_id: result.uld_id, container_type: result.uld_id, loaded_count: result.loaded_count }];
+  elements.containerSelector.innerHTML = containers
+    .map((container) => {
+      const label = `${container.container_id}（${container.container_type ?? container.uld_id}，已装 ${container.loaded_count ?? 0}）`;
+      return `<option value="${escapeAttribute(container.container_id)}">${escapeHtml(label)}</option>`;
+    })
+    .join("");
+  const firstContainerId = containers[0]?.container_id ?? "";
+  elements.containerSelector.value = state.selectedContainerId && containers.some((item) => item.container_id === state.selectedContainerId)
+    ? state.selectedContainerId
+    : firstContainerId;
+}
+
+function selectContainer(containerId, options = {}) {
+  if (!state.result) {
+    return;
+  }
+  state.selectedContainerId = containerId || firstResultContainerId(state.result);
+  if (elements.containerSelector.value !== state.selectedContainerId) {
+    elements.containerSelector.value = state.selectedContainerId;
+  }
+  const activeResult = getActiveResult();
+  const activeInput = getActiveProfileInput();
+  if (!options.preserveSelection) {
+    state.selectedInstanceId = activeResult?.placements?.[0]?.instance_id ?? null;
+  }
+  if (!activeResult?.placements?.some((placement) => placement.instance_id === state.selectedInstanceId)) {
+    state.selectedInstanceId = activeResult?.placements?.[0]?.instance_id ?? null;
+  }
+  if (activeInput) {
+    configureSliceControl(activeInput.uld.length);
+  }
+  if (state.selectedInstanceId) {
+    syncSliceToSelectedPlacement();
+  }
+  renderActiveContainerDetails();
+  drawAllViews();
+}
+
+function firstResultContainerId(result) {
+  return result.containers?.[0]?.container_id ?? result.uld_id ?? "";
+}
+
+function getActiveResult() {
+  if (!state.result?.containers) {
+    return state.result;
+  }
+  return state.result.containers.find((container) => container.container_id === state.selectedContainerId) ?? state.result.containers[0] ?? null;
+}
+
+function getActiveProfileInput() {
+  if (!state.input) {
+    return null;
+  }
+  const containers = expandContainerSpecs(state.input.containers);
+  const active = containers.find((container) => container.container_id === state.selectedContainerId) ?? containers[0];
+  if (!active) {
+    return null;
+  }
+  return {
+    uld: {
+      id: active.container_id,
+      length: active.length,
+      cross_section: active.cross_section,
+    },
+    boxes: state.input.boxes,
+    objective: state.input.objective ?? "maximize_volume",
+  };
+}
+
+function expandContainerSpecs(containers) {
+  const counters = new Map();
+  return containers.flatMap((container) => {
+    const quantity = Number(container.quantity ?? 1);
+    return Array.from({ length: quantity }, () => {
+      const index = (counters.get(container.id) ?? 0) + 1;
+      counters.set(container.id, index);
+      return {
+        container_id: `${container.id}-${String(index).padStart(3, "0")}`,
+        container_type: container.id,
+        length: Number(container.length),
+        cross_section: container.cross_section,
+      };
+    });
+  });
+}
+
 function renderResult(result) {
   const utilization = `${(result.volume_utilization * 100).toFixed(2)}%`;
   elements.summaryCards.innerHTML = `
@@ -268,17 +455,14 @@ function renderResult(result) {
   `;
 
   renderLoadedList(result);
-  if (result.unloaded.length === 0) {
-    elements.unloadedList.textContent = "暂无";
-    elements.unloadedList.classList.add("muted-text");
-  } else {
-    elements.unloadedList.classList.remove("muted-text");
-    elements.unloadedList.innerHTML = result.unloaded
-      .map((item) => `<div>${escapeHtml(item.box_id)} × ${item.quantity}：${escapeHtml(item.reason)}</div>`)
-      .join("");
-  }
+  renderUnloadedList(result);
+  renderActiveContainerDetails();
+}
 
-  const rows = result.placements
+function renderActiveContainerDetails() {
+  const activeResult = getActiveResult();
+  const placements = activeResult?.placements ?? [];
+  const rows = placements
     .slice(0, 300)
     .map(
       (placement) => `
@@ -315,6 +499,20 @@ function renderLoadedList(result) {
     .join("");
 }
 
+function renderUnloadedList(result) {
+  const unloaded = result.unloaded ?? [];
+  if (unloaded.length === 0) {
+    elements.unloadedList.textContent = "暂无";
+    elements.unloadedList.classList.add("muted-text");
+    return;
+  }
+
+  elements.unloadedList.classList.remove("muted-text");
+  elements.unloadedList.innerHTML = unloaded
+    .map((item) => `<div>${escapeHtml(item.box_id)} × ${item.quantity}：${escapeHtml(item.reason)}</div>`)
+    .join("");
+}
+
 function loadedSummaryFromPlacements(placements) {
   const counter = new Map();
   placements.forEach((placement) => {
@@ -344,27 +542,29 @@ function drawScene() {
   state.hitRegions.scene = [];
   context.clearRect(0, 0, rect.width, rect.height);
 
-  if (!state.input) {
+  const activeInput = getActiveProfileInput();
+  if (!activeInput) {
     return;
   }
 
-  const dimensions = getSceneDimensions(state.input);
+  const activeResult = getActiveResult();
+  const dimensions = getSceneDimensions(activeInput);
   const scale = getSceneScale(rect, dimensions);
   const projector = (point) => projectPoint(point, dimensions, scale, rect);
   drawBackgroundText(context, rect);
-  drawPrism(context, state.input, projector);
+  drawPrism(context, activeInput, projector);
 
-  if (state.result) {
-    const boxFaces = state.result.placements.flatMap((placement, index) => createBoxFaces(placement, index));
+  if (activeResult) {
+    const boxFaces = activeResult.placements.flatMap((placement, index) => createBoxFaces(placement, index));
     drawFaces(context, boxFaces, projector, state.hitRegions.scene);
   }
 
-  drawPrismEdges(context, state.input, projector);
+  drawPrismEdges(context, activeInput, projector);
   drawAxes(context, projector, dimensions);
 }
 
 function drawProjectionViews() {
-  if (!state.input) {
+  if (!getActiveProfileInput()) {
     return;
   }
   drawTopView();
@@ -394,7 +594,7 @@ function drawSectionView() {
   const view = setupProjectionCanvas(elements.sectionViewCanvas, "section");
   const mapper = createPlaneMapper(view.rect, view.dimensions.maxY, view.dimensions.maxZ, "y", "z");
   drawProjectionFrame(view.context, view.rect, "y 宽度", "z 高度");
-  drawSectionPolygon(view.context, mapper, state.input.uld.cross_section);
+  drawSectionPolygon(view.context, mapper, getActiveProfileInput().uld.cross_section);
   drawProjectionBoxes(view.context, mapper, "section");
 }
 
@@ -402,7 +602,7 @@ function setupProjectionCanvas(canvas, key) {
   const { context, rect } = setupCanvas(canvas);
   state.hitRegions[key] = [];
   context.clearRect(0, 0, rect.width, rect.height);
-  return { context, rect, dimensions: getSceneDimensions(state.input) };
+  return { context, rect, dimensions: getSceneDimensions(getActiveProfileInput()) };
 }
 
 function setupCanvas(canvas) {
@@ -482,7 +682,7 @@ function drawSectionPolygon(context, mapper, points) {
 }
 
 function drawProjectionBoxes(context, mapper, viewKey) {
-  if (!state.result) {
+  if (!getActiveResult()) {
     return;
   }
 
@@ -508,10 +708,12 @@ function drawProjectionBoxes(context, mapper, viewKey) {
 }
 
 function placementsForView(viewKey) {
+  const activeResult = getActiveResult();
+  const placements = activeResult?.placements ?? [];
   if (viewKey !== "section") {
-    return state.result.placements;
+    return placements;
   }
-  return state.result.placements.filter((placement) => placement.x <= state.sliceX && state.sliceX <= placement.x + placement.length);
+  return placements.filter((placement) => placement.x <= state.sliceX && state.sliceX <= placement.x + placement.length);
 }
 
 function projectionRectForPlacement(mapper, placement, viewKey) {
@@ -756,7 +958,8 @@ function colorForBox(id, index) {
 }
 
 function selectPlacement(instanceId, options = {}) {
-  if (!instanceId || !state.result?.placements.some((placement) => placement.instance_id === instanceId)) {
+  const activeResult = getActiveResult();
+  if (!instanceId || !activeResult?.placements.some((placement) => placement.instance_id === instanceId)) {
     return;
   }
   state.selectedInstanceId = instanceId;
@@ -770,10 +973,11 @@ function selectPlacement(instanceId, options = {}) {
 
 function syncSliceToSelectedPlacement() {
   const placement = getSelectedPlacement();
-  if (!placement) {
+  const activeInput = getActiveProfileInput();
+  if (!placement || !activeInput) {
     return;
   }
-  state.sliceX = clamp(placement.x + placement.length / 2, 0, Number(state.input.uld.length));
+  state.sliceX = clamp(placement.x + placement.length / 2, 0, Number(activeInput.uld.length));
   elements.sliceSlider.value = String(Math.round(state.sliceX));
   state.sliceX = Number(elements.sliceSlider.value);
   updateSliceValue();
@@ -804,7 +1008,7 @@ function updateSelectedRow() {
 }
 
 function getSelectedPlacement() {
-  return state.result?.placements.find((placement) => placement.instance_id === state.selectedInstanceId) ?? null;
+  return getActiveResult()?.placements.find((placement) => placement.instance_id === state.selectedInstanceId) ?? null;
 }
 
 function selectScenePlacementAtPointer(event) {

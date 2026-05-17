@@ -21,6 +21,22 @@ def _non_empty(value: str, name: str) -> None:
 
 
 @dataclass(frozen=True)
+class ContainerSpec:
+    id: str
+    length: float
+    cross_section: list[Point2D]
+    quantity: int = 1
+
+    def __post_init__(self) -> None:
+        _non_empty(self.id, "container.id")
+        _positive(self.length, "container.length")
+        if len(self.cross_section) < 3:
+            raise PackingInputError("container.cross_section must have at least 3 points")
+        if self.quantity < 0:
+            raise PackingInputError("container.quantity must be non-negative")
+
+
+@dataclass(frozen=True)
 class ULDProfile:
     id: str
     length: float
@@ -60,6 +76,17 @@ class ProfilePackingInput:
     uld: ULDProfile
     boxes: list[BoxSpec]
     objective: str = "maximize_volume"
+
+
+@dataclass(frozen=True)
+class MultiContainerPackingInput:
+    containers: list[ContainerSpec]
+    boxes: list[BoxSpec]
+    objective: str = "maximize_volume"
+
+    def __post_init__(self) -> None:
+        if not self.containers:
+            raise PackingInputError("containers must not be empty")
 
 
 @dataclass(frozen=True)
@@ -105,3 +132,24 @@ class ProfilePackingResult:
     validation_passed: bool
     validation_errors: list[str] = field(default_factory=list)
     loaded: list[LoadedBox] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ContainerPackingResult:
+    container_id: str
+    container_type: str
+    result: ProfilePackingResult
+
+
+@dataclass(frozen=True)
+class MultiContainerPackingResult:
+    loaded_count: int
+    unloaded_count: int
+    used_volume: float
+    container_volume: float
+    volume_utilization: float
+    containers: list[ContainerPackingResult]
+    loaded: list[LoadedBox]
+    unloaded: list[UnloadedBox]
+    validation_passed: bool
+    validation_errors: list[str] = field(default_factory=list)

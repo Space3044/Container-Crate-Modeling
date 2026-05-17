@@ -161,7 +161,8 @@ label,
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -169,7 +170,8 @@ textarea {
   background: rgba(2, 6, 23, 0.58);
 }
 
-input {
+input,
+select {
   height: 44px;
   padding: 0 12px;
 }
@@ -241,6 +243,18 @@ th {
 .box-table input {
   min-width: 68px;
   height: 38px;
+}
+
+.container-table input {
+  min-width: 78px;
+  height: 38px;
+}
+
+.container-table textarea {
+  min-width: 260px;
+  min-height: 72px;
+  padding: 8px 10px;
+  line-height: 1.4;
 }
 
 .box-table input[type="checkbox"] {
@@ -398,6 +412,10 @@ input[type="range"] {
 .result-list {
   margin-top: 10px;
   line-height: 1.6;
+}
+
+.container-selector-label {
+  margin-top: 10px;
 }
 
 .selected-box-card {

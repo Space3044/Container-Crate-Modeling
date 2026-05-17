@@ -10,7 +10,7 @@
   <body>
     <header class="app-header">
       <div>
-        <p class="eyebrow">Single ULD Profile Packing</p>
+        <p class="eyebrow">Multi ULD Profile Packing</p>
         <h1>ULD 装箱可视化</h1>
       </div>
       <div class="header-actions">
@@ -23,21 +23,25 @@
       <section class="panel input-panel" aria-labelledby="input-title">
         <h2 id="input-title">输入参数</h2>
 
-        <div class="field-grid">
-          <label>
-            ULD ID
-            <input id="uldIdInput" type="text" value="ULD-001" />
-          </label>
-          <label>
-            ULD 长度 x
-            <input id="uldLengthInput" type="number" min="1" step="1" value="300" />
-          </label>
+        <div class="section-heading">
+          <h3>ULD</h3>
+          <button id="addContainerButton" type="button" class="secondary-button small-button">添加 ULD</button>
         </div>
 
-        <label class="stacked-field">
-          y-z 截面五边形点
-          <textarea id="crossSectionInput" rows="7">[[0,0],[220,0],[220,110],[170,160],[0,160]]</textarea>
-        </label>
+        <div class="table-scroll">
+          <table class="container-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>长度 x</th>
+                <th>数量</th>
+                <th>y-z 截面点</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="containerTableBody"></tbody>
+          </table>
+        </div>
 
         <div class="section-heading">
           <h3>箱子</h3>
@@ -103,6 +107,12 @@
       <section class="panel result-panel" aria-labelledby="result-title">
         <h2 id="result-title">计算结果</h2>
         <div id="summaryCards" class="summary-grid"></div>
+
+        <h3>当前 ULD</h3>
+        <label class="container-selector-label">
+          选择要查看的 ULD 实例
+          <select id="containerSelector"></select>
+        </label>
 
         <h3>已装箱类型</h3>
         <div id="loadedList" class="result-list muted-text">暂无</div>

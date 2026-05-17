@@ -7,8 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from cargo_loading.profile_packer import pack_profile
-from cargo_loading.profile_solver import profile_input_from_dict, profile_result_to_dict
+from cargo_loading.profile_packer import pack_packing
+from cargo_loading.profile_solver import packing_input_from_dict, packing_result_to_dict
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -45,13 +45,13 @@ def create_handler(
 
             try:
                 payload = self._read_json_body()
-                problem = profile_input_from_dict(payload)
-                result = pack_profile(problem)
+                problem = packing_input_from_dict(payload)
+                result = pack_packing(problem)
             except Exception as error:
                 self._send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
                 return
 
-            self._send_json({"result": profile_result_to_dict(result)})
+            self._send_json({"result": packing_result_to_dict(result)})
 
         def log_message(self, format: str, *args: Any) -> None:
             return
@@ -96,7 +96,7 @@ def run_server(host: str = "127.0.0.1", port: int = 8000, static_dir: str | Path
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the single ULD packing visualizer web page.")
+    parser = argparse.ArgumentParser(description="Run the ULD packing visualizer web page.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--static-dir", default=str(DEFAULT_STATIC_DIR))
