@@ -278,6 +278,50 @@ class MultiContainerPackerTests(unittest.TestCase):
         self.assertGreaterEqual(result.loaded_count, 700)
         self.assertTrue(result.validation_passed)
 
+    def test_pack_multi_profile_packs_repeated_boxes_into_fewer_uld_before_opening_new_ones(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="ULD-A",
+                    length=300,
+                    cross_section=[(0, 0), (220, 0), (220, 110), (170, 160), (0, 160)],
+                    quantity=12,
+                )
+            ],
+            boxes=[
+                BoxSpec(id="BOX-A", length=60, width=40, height=30, quantity=200, rotatable=True),
+            ],
+        )
+
+        result = pack_multi_profile(problem)
+
+        used_containers = [container for container in result.containers if container.result.loaded_count > 0]
+        self.assertEqual(result.loaded_count, 200)
+        self.assertLessEqual(len(used_containers), 3)
+        self.assertTrue(result.validation_passed)
+
+    def test_pack_multi_profile_refills_fragmented_space_with_remaining_small_boxes(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=120,
+                    cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+                    quantity=12,
+                )
+            ],
+            boxes=[
+                BoxSpec(id="BIG", length=60, width=50, height=50, quantity=50, rotatable=True),
+                BoxSpec(id="SMALL", length=20, width=20, height=20, quantity=800, rotatable=True),
+            ],
+        )
+
+        result = pack_multi_profile(problem)
+
+        self.assertEqual(result.loaded_count, 850)
+        self.assertEqual(result.unloaded_count, 0)
+        self.assertTrue(result.validation_passed)
+
     def test_pack_multi_profile_keeps_layer_candidates_for_many_uld_and_box_types(self):
         problem = MultiContainerPackingInput(
             containers=[

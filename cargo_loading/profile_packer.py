@@ -212,6 +212,7 @@ def pack_multi_profile(problem: MultiContainerPackingInput) -> MultiContainerPac
         states = _select_global_beam_states(problem, next_states, limits.beam_width)
 
     best_state = max(states, key=lambda state: _global_state_score(problem, state))
+    best_state = _refill_remaining_boxes_in_used_containers(problem, best_state, box_by_id, limits)
     return _multi_result_from_global_state(problem, best_state)
 
 
@@ -324,10 +325,33 @@ def _container_candidate_options(
     limits: SearchLimits | None = None,
 ) -> list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]]:
     limits = limits or _global_search_limits(problem)
-    options: list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]] = []
-    container_pool = _candidate_container_pool(state.containers, box, limits)
     quantity = state.remaining_counter[box.id]
     instance_id = f"{box.id}-{box.quantity - quantity + 1:03d}"
+
+    active_pool = [
+        (index, container)
+        for index, container in enumerate(state.containers)
+        if container.placements and _box_can_fit_container(box, container.spec) and _container_remaining_volume(container) >= box.volume
+    ]
+    active_options = _container_options_from_pool(problem, active_pool, box, instance_id, limits)
+    if active_options:
+        return _sort_container_options(active_options, limits)
+
+    container_pool = _candidate_container_pool(state.containers, box, limits)
+    return _sort_container_options(
+        _container_options_from_pool(problem, container_pool, box, instance_id, limits),
+        limits,
+    )
+
+
+def _container_options_from_pool(
+    problem: MultiContainerPackingInput,
+    container_pool: list[tuple[int, ContainerState]],
+    box: BoxSpec,
+    instance_id: str,
+    limits: SearchLimits,
+) -> list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]]:
+    options: list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]] = []
     for container_index, container_state in container_pool:
         profile_input = _profile_input_for_container(problem, container_state)
         candidates = _placement_candidates(
@@ -339,6 +363,13 @@ def _container_candidate_options(
         )
         if candidates:
             options.append((container_index, container_state, profile_input, candidates[: limits.placement_branches]))
+    return options
+
+
+def _sort_container_options(
+    options: list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]],
+    limits: SearchLimits,
+) -> list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]]:
     return sorted(
         options,
         key=lambda option: _container_option_score(option[1], option[3][0]),
@@ -486,6 +517,92 @@ def _repeat_box_in_container(
     return current_state
 
 
+def _refill_remaining_boxes_in_used_containers(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+) -> GlobalPackingState:
+    current_state = state
+    while True:
+        next_state = _next_refill_state(problem, current_state, box_by_id, limits)
+        if next_state is None:
+            return current_state
+        current_state = next_state
+
+
+def _next_refill_state(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+) -> GlobalPackingState | None:
+    for box in _refill_candidate_box_types(state, box_by_id):
+        option = _best_refill_option(problem, state, box)
+        if option is None:
+            continue
+        container_index, container_state, profile_input, placement = option
+        next_state = _place_box_in_global_state(
+            state,
+            container_index,
+            container_state,
+            profile_input,
+            box,
+            placement,
+            limits,
+        )
+        return _repeat_box_in_container(problem, next_state, container_index, box, limits)
+    return None
+
+
+def _refill_candidate_box_types(state: GlobalPackingState, box_by_id: dict[str, BoxSpec]) -> list[BoxSpec]:
+    return sorted(
+        (box_by_id[box_id] for box_id, quantity in state.remaining_counter.items() if quantity > 0),
+        key=lambda box: (box.volume, -state.remaining_counter[box.id], max(box.length, box.width, box.height)),
+    )
+
+
+def _best_refill_option(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box: BoxSpec,
+) -> tuple[int, ContainerState, ProfilePackingInput, BoxPlacement] | None:
+    options: list[tuple[int, ContainerState, ProfilePackingInput, BoxPlacement]] = []
+    quantity = state.remaining_counter[box.id]
+    instance_id = f"{box.id}-{box.quantity - quantity + 1:03d}"
+    for container_index, container_state in enumerate(state.containers):
+        if not container_state.placements:
+            continue
+        if not _box_can_fit_container(box, container_state.spec) or _container_remaining_volume(container_state) < box.volume:
+            continue
+        profile_input = _profile_input_for_container(problem, container_state)
+        candidate_points = _refill_candidate_points(profile_input, container_state.placements, limits=None)
+        candidates = _placement_candidates(
+            box,
+            instance_id,
+            profile_input,
+            container_state.placements,
+            candidate_points,
+        )
+        if candidates:
+            options.append((container_index, container_state, profile_input, candidates[0]))
+    if not options:
+        return None
+    return max(options, key=lambda option: _container_option_score(option[1], option[3]))
+
+
+def _refill_candidate_points(
+    problem: ProfilePackingInput,
+    placements: list[BoxPlacement],
+    limits: SearchLimits | None,
+) -> list[Point3D]:
+    points = [(0, 0, 0)]
+    for placement in placements:
+        points.extend(_new_candidate_points(placement))
+    max_points = _candidate_point_limit(limits) if limits else 160
+    return _prune_candidate_points(points, problem, placements, max_points=max_points)
+
+
 def _place_box_in_global_state(
     state: GlobalPackingState,
     container_index: int,
@@ -501,7 +618,7 @@ def _place_box_in_global_state(
         [*container_state.candidate_points, *_new_candidate_points(placement)],
         profile_input,
         [*container_state.placements, placement],
-        max_points=limits.candidate_points,
+        max_points=_candidate_point_limit(limits),
     )
     next_container = ContainerState(
         spec=container_state.spec,
@@ -752,7 +869,7 @@ def _placement_score(
     problem: ProfilePackingInput,
     placements: list[BoxPlacement],
     placement: BoxPlacement,
-) -> tuple[float, float, float, float, int, float, float, float]:
+) -> tuple[float, float, float, float, float, float, int, float, float, float]:
     max_x, max_y, max_z = _bounding_extents([*placements, placement])
     bounding_volume = max_x * max_y * max_z
     return (
@@ -760,6 +877,8 @@ def _placement_score(
         max_z,
         max_y,
         max_x,
+        -_support_ratio(placement, placements),
+        -_dominant_support_ratio(placement, placements),
         -_contact_count(problem, placements, placement),
         placement.z,
         placement.y,
@@ -918,6 +1037,10 @@ def _select_diverse_candidate_points(sorted_points: list[Point3D], max_points: i
     return sorted(selected, key=_candidate_point_sort_key)
 
 
+def _candidate_point_limit(limits: SearchLimits) -> int:
+    return max(160, limits.candidate_points)
+
+
 def _point_inside_placement(point: Point3D, placement: BoxPlacement) -> bool:
     x, y, z = point
     return (
@@ -928,11 +1051,24 @@ def _point_inside_placement(point: Point3D, placement: BoxPlacement) -> bool:
 
 
 def _placement_has_enough_support(placement: BoxPlacement, placements: list[BoxPlacement]) -> bool:
+    return _support_ratio(placement, placements) >= MIN_BOTTOM_SUPPORT_RATIO
+
+
+def _support_ratio(placement: BoxPlacement, placements: list[BoxPlacement]) -> float:
     if placement.z == 0:
-        return True
+        return 1
     support_area = sum(_support_overlap_area(placement, existing) for existing in placements)
     bottom_area = placement.length * placement.width
-    return support_area >= bottom_area * MIN_BOTTOM_SUPPORT_RATIO
+    return support_area / bottom_area if bottom_area else 0
+
+
+def _dominant_support_ratio(placement: BoxPlacement, placements: list[BoxPlacement]) -> float:
+    if placement.z == 0:
+        return 1
+    bottom_area = placement.length * placement.width
+    if not bottom_area:
+        return 0
+    return max((_support_overlap_area(placement, existing) for existing in placements), default=0) / bottom_area
 
 
 def _support_overlap_area(placement: BoxPlacement, supporter: BoxPlacement) -> float:
