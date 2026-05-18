@@ -20,12 +20,29 @@ const fallbackInput = {
 };
 
 const AXIS_EXTENSION_FACTOR = 1.18;
+const BOX_ANIMATION_INTERVAL_MS = 320;
+const BOX_COLOR_PALETTE = [
+  { r: 14, g: 165, b: 233 },
+  { r: 245, g: 158, b: 11 },
+  { r: 168, g: 85, b: 247 },
+  { r: 16, g: 185, b: 129 },
+  { r: 244, g: 63, b: 94 },
+  { r: 99, g: 102, b: 241 },
+  { r: 20, g: 184, b: 166 },
+  { r: 249, g: 115, b: 22 },
+  { r: 217, g: 70, b: 239 },
+  { r: 132, g: 204, b: 22 },
+  { r: 236, g: 72, b: 153 },
+  { r: 59, g: 130, b: 246 },
+];
 
 const state = {
   input: structuredClone(fallbackInput),
   result: null,
   selectedContainerId: null,
   selectedInstanceId: null,
+  hoveredInstanceId: null,
+  focusedBoxId: null,
   sliceX: 0,
   camera: {
     yaw: -0.72,
@@ -46,6 +63,14 @@ const state = {
     top: [],
     side: [],
     section: [],
+  },
+  animation: {
+    active: false,
+    frameId: null,
+    startedAt: 0,
+    elapsed: 0,
+    speed: 1,
+    visibleCount: null,
   },
 };
 
@@ -70,6 +95,11 @@ function cacheElements() {
   elements.calculateButton = document.getElementById("calculateButton");
   elements.loadSampleButton = document.getElementById("loadSampleButton");
   elements.resetViewButton = document.getElementById("resetViewButton");
+  elements.animationPlayButton = document.getElementById("animationPlayButton");
+  elements.animationResetButton = document.getElementById("animationResetButton");
+  elements.animationSpeedSlider = document.getElementById("animationSpeedSlider");
+  elements.animationSpeedValue = document.getElementById("animationSpeedValue");
+  elements.animationProgress = document.getElementById("animationProgress");
   elements.isometricViewButton = document.getElementById("isometricViewButton");
   elements.topViewButton = document.getElementById("topViewButton");
   elements.sideViewButton = document.getElementById("sideViewButton");
@@ -80,9 +110,12 @@ function cacheElements() {
   elements.summaryCards = document.getElementById("summaryCards");
   elements.loadedList = document.getElementById("loadedList");
   elements.unloadedList = document.getElementById("unloadedList");
+  elements.activeContainerStats = document.getElementById("activeContainerStats");
   elements.selectedBoxDetails = document.getElementById("selectedBoxDetails");
   elements.placementsTableBody = document.getElementById("placementsTableBody");
   elements.canvas = document.getElementById("sceneCanvas");
+  elements.sceneTooltip = document.getElementById("sceneTooltip");
+  elements.sceneStage = elements.canvas.parentElement;
   elements.topViewCanvas = document.getElementById("topViewCanvas");
   elements.sideViewCanvas = document.getElementById("sideViewCanvas");
   elements.sectionViewCanvas = document.getElementById("sectionViewCanvas");
@@ -105,6 +138,9 @@ function bindEvents() {
   elements.topViewButton.addEventListener("click", () => setCameraView("top"));
   elements.sideViewButton.addEventListener("click", () => setCameraView("side"));
   elements.sectionViewButton.addEventListener("click", () => setCameraView("section"));
+  elements.animationPlayButton.addEventListener("click", togglePackingAnimation);
+  elements.animationResetButton.addEventListener("click", resetPackingAnimation);
+  elements.animationSpeedSlider.addEventListener("input", () => setAnimationSpeed(elements.animationSpeedSlider.value));
   elements.sliceSlider.addEventListener("input", () => {
     state.sliceX = Number(elements.sliceSlider.value);
     updateSliceValue();
@@ -114,7 +150,10 @@ function bindEvents() {
   elements.canvas.addEventListener("pointerdown", startPointerDrag);
   elements.canvas.addEventListener("pointermove", movePointerDrag);
   elements.canvas.addEventListener("pointerup", endPointerDrag);
-  elements.canvas.addEventListener("pointerleave", endPointerDrag);
+  elements.canvas.addEventListener("pointerleave", (event) => {
+    endPointerDrag(event);
+    clearHoveredScenePlacement();
+  });
   elements.canvas.addEventListener("click", selectScenePlacementAtPointer);
   elements.canvas.addEventListener("dblclick", () => {
     resetView();
@@ -123,9 +162,9 @@ function bindEvents() {
   elements.canvas.addEventListener("wheel", zoomScene, { passive: false });
   elements.canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
-  elements.topViewCanvas.addEventListener("click", (event) => selectProjectionPlacementAtPointer(event, "top"));
-  elements.sideViewCanvas.addEventListener("click", (event) => selectProjectionPlacementAtPointer(event, "side"));
-  elements.sectionViewCanvas.addEventListener("click", (event) => selectProjectionPlacementAtPointer(event, "section"));
+  elements.topViewCanvas.addEventListener("click", (event) => focusProjectionCameraView(event, "top"));
+  elements.sideViewCanvas.addEventListener("click", (event) => focusProjectionCameraView(event, "side"));
+  elements.sectionViewCanvas.addEventListener("click", (event) => focusProjectionCameraView(event, "section"));
 }
 
 async function loadSample() {
@@ -253,6 +292,7 @@ function alphabeticLabel(index) {
 
 async function calculatePacking() {
   try {
+    stopPackingAnimation();
     setBusy(true);
     clearError();
     const input = readInputFromForm();
@@ -269,6 +309,10 @@ async function calculatePacking() {
     state.result = data.result;
     state.selectedContainerId = null;
     state.selectedInstanceId = null;
+    state.hoveredInstanceId = null;
+    state.focusedBoxId = null;
+    resetAnimationState({ showFull: true });
+    hideSceneTooltip();
     renderContainerSelector(data.result);
     renderResult(data.result);
     selectContainer(elements.containerSelector.value, { preserveSelection: false });
@@ -397,7 +441,13 @@ function selectContainer(containerId, options = {}) {
   if (!state.result) {
     return;
   }
+  if (!options.preserveAnimation) {
+    resetAnimationState({ showFull: true });
+  }
   state.selectedContainerId = containerId || firstResultContainerId(state.result);
+  state.hoveredInstanceId = null;
+  state.focusedBoxId = null;
+  hideSceneTooltip();
   if (elements.containerSelector.value !== state.selectedContainerId) {
     elements.containerSelector.value = state.selectedContainerId;
   }
@@ -468,7 +518,7 @@ function expandContainerSpecs(containers) {
 }
 
 function renderResult(result) {
-  const utilization = `${(result.volume_utilization * 100).toFixed(2)}%`;
+  const utilization = formatPercent(result.volume_utilization);
   elements.summaryCards.innerHTML = `
     ${summaryCard("已装箱", result.loaded_count)}
     ${summaryCard("未装箱", result.unloaded_count)}
@@ -483,6 +533,7 @@ function renderResult(result) {
 
 function renderActiveContainerDetails() {
   const activeResult = getActiveResult();
+  renderActiveContainerStats(activeResult);
   const placements = activeResult?.placements ?? [];
   const rows = placements
     .slice(0, 300)
@@ -502,9 +553,24 @@ function renderActiveContainerDetails() {
     .join("");
   elements.placementsTableBody.innerHTML = rows;
   elements.placementsTableBody.querySelectorAll("tr").forEach((row) => {
-    row.addEventListener("click", () => selectPlacement(row.dataset.instanceId, { syncSlice: true }));
+    row.addEventListener("click", () => selectPlacement(row.dataset.instanceId, { syncSlice: true, focusSameBoxType: true }));
   });
   renderSelectedBoxDetails();
+}
+
+function renderActiveContainerStats(activeResult) {
+  if (!activeResult) {
+    elements.activeContainerStats.classList.add("muted-text");
+    elements.activeContainerStats.textContent = "选择 ULD 后显示单个 ULD 装载率。";
+    return;
+  }
+
+  elements.activeContainerStats.classList.remove("muted-text");
+  elements.activeContainerStats.innerHTML = `
+    <div><span>单个 ULD 装载率</span><strong>${formatPercent(activeResult.volume_utilization)}</strong></div>
+    <div><span>已装箱</span><strong>${activeResult.loaded_count ?? 0}</strong></div>
+    <div><span>已用体积</span><strong>${formatNumber(activeResult.used_volume ?? 0)} / ${formatNumber(activeResult.uld_volume ?? 0)}</strong></div>
+  `;
 }
 
 function renderLoadedList(result) {
@@ -554,6 +620,109 @@ function summaryCard(label, value, className = "") {
   `;
 }
 
+function togglePackingAnimation() {
+  if (state.animation.active) {
+    stopPackingAnimation();
+    updateAnimationControls();
+    return;
+  }
+  startPackingAnimation();
+}
+
+function resetPackingAnimation() {
+  resetAnimationState({ showFull: false });
+  drawScene();
+}
+
+function setAnimationSpeed(value) {
+  const nextSpeed = clamp(Number(value), 0.5, 4);
+  if (state.animation.active) {
+    state.animation.elapsed = animationElapsedAt(performance.now());
+    state.animation.startedAt = performance.now();
+  }
+  state.animation.speed = nextSpeed;
+  elements.animationSpeedSlider.value = String(nextSpeed);
+  updateAnimationControls();
+}
+
+function startPackingAnimation() {
+  const total = getActiveResult()?.placements?.length ?? 0;
+  if (!total) {
+    updateAnimationControls();
+    return;
+  }
+  if (state.animation.visibleCount === null || state.animation.visibleCount >= total) {
+    state.animation.elapsed = 0;
+    state.animation.visibleCount = 0;
+  }
+  state.animation.active = true;
+  state.animation.startedAt = performance.now();
+  state.animation.frameId = requestAnimationFrame(animationFrame);
+  updateAnimationControls();
+}
+
+function stopPackingAnimation() {
+  if (state.animation.frameId !== null) {
+    cancelAnimationFrame(state.animation.frameId);
+  }
+  if (state.animation.active) {
+    state.animation.elapsed = animationElapsedAt(performance.now());
+  }
+  state.animation.active = false;
+  state.animation.frameId = null;
+}
+
+function animationFrame(timestamp) {
+  const activeResult = getActiveResult();
+  const total = activeResult?.placements?.length ?? 0;
+  const elapsed = animationElapsedAt(timestamp);
+  state.animation.visibleCount = Math.min(total, Math.floor(elapsed / BOX_ANIMATION_INTERVAL_MS));
+  drawScene();
+
+  if (state.animation.visibleCount >= total) {
+    state.animation.elapsed = total * BOX_ANIMATION_INTERVAL_MS;
+    state.animation.active = false;
+    state.animation.frameId = null;
+    updateAnimationControls();
+    return;
+  }
+
+  state.animation.frameId = requestAnimationFrame(animationFrame);
+  updateAnimationControls();
+}
+
+function visibleScenePlacements(activeResult) {
+  let placements = activeResult?.placements ?? [];
+  if (state.animation.visibleCount !== null) {
+    placements = placements.slice(0, state.animation.visibleCount);
+  }
+  return state.focusedBoxId ? placements.filter((placement) => placement.box_id === state.focusedBoxId) : placements;
+}
+
+function resetAnimationState({ showFull }) {
+  stopPackingAnimation();
+  state.animation.elapsed = 0;
+  state.animation.visibleCount = showFull ? null : 0;
+  updateAnimationControls();
+}
+
+function animationElapsedAt(timestamp) {
+  if (!state.animation.active) {
+    return state.animation.elapsed;
+  }
+  return state.animation.elapsed + (timestamp - state.animation.startedAt) * state.animation.speed;
+}
+
+function updateAnimationControls() {
+  const total = getActiveResult()?.placements?.length ?? 0;
+  const visible = state.animation.visibleCount === null ? total : Math.min(total, state.animation.visibleCount);
+  elements.animationPlayButton.disabled = total === 0;
+  elements.animationResetButton.disabled = total === 0;
+  elements.animationPlayButton.textContent = state.animation.active ? "暂停动画" : "播放动画";
+  elements.animationSpeedValue.textContent = `${formatSpeed(state.animation.speed)}x`;
+  elements.animationProgress.textContent = state.animation.visibleCount === null ? "完整结果" : `${visible} / ${total}`;
+}
+
 function drawAllViews() {
   drawScene();
   drawProjectionViews();
@@ -573,16 +742,20 @@ function drawScene() {
   const dimensions = getSceneDimensions(activeInput);
   const scale = getSceneScale(rect, dimensions);
   const projector = (point) => projectPoint(point, dimensions, scale, rect);
-  drawBackgroundText(context, rect);
+  drawFloorGrid(context, projector, dimensions);
   drawPrism(context, activeInput, projector);
 
   if (activeResult) {
-    const boxFaces = activeResult.placements.flatMap((placement, index) => createBoxFaces(placement, index));
+    const visiblePlacements = visibleScenePlacements(activeResult);
+    const latestAnimatedId = currentAnimatedInstanceId(visiblePlacements);
+    const boxFaces = visiblePlacements.flatMap((placement) => createBoxFaces(placement, latestAnimatedId));
     drawFaces(context, boxFaces, projector, state.hitRegions.scene);
+    drawBoxWireframes(context, visiblePlacements, projector, latestAnimatedId);
   }
 
   drawPrismEdges(context, activeInput, projector);
   drawAxes(context, projector, dimensions);
+  drawBackgroundText(context, rect);
 }
 
 function drawProjectionViews() {
@@ -709,18 +882,19 @@ function drawProjectionBoxes(context, mapper, viewKey) {
   }
 
   const placements = placementsForView(viewKey);
-  placements.forEach((placement, index) => {
-    const color = colorForBox(placement.box_id, index);
+  placements.forEach((placement) => {
+    const color = colorForBox(placement.box_id);
     const rect = projectionRectForPlacement(mapper, placement, viewKey);
     const isSelected = placement.instance_id === state.selectedInstanceId;
+    const strokeColor = lightenColor(color, isSelected ? 0.58 : 0.34);
     context.save();
-    context.fillStyle = `rgba(${color.r}, ${color.g}, ${color.b}, ${isSelected ? 0.82 : 0.44})`;
-    context.strokeStyle = isSelected ? "#fef08a" : `rgba(${Math.min(color.r + 55, 255)}, ${Math.min(color.g + 55, 255)}, ${Math.min(color.b + 55, 255)}, 0.92)`;
+    context.fillStyle = rgbaColor(color, isSelected ? 0.84 : 0.56);
+    context.strokeStyle = isSelected ? "#fef08a" : rgbaColor(strokeColor, 0.96);
     context.lineWidth = isSelected ? 3 : 1.2;
     context.fillRect(rect.x, rect.y, rect.width, rect.height);
     context.strokeRect(rect.x, rect.y, rect.width, rect.height);
-    if (isSelected || rect.width > 52) {
-      context.fillStyle = isSelected ? "#fff7ed" : "rgba(226, 232, 240, 0.82)";
+    if (isSelected) {
+      context.fillStyle = "#fff7ed";
       context.font = "11px system-ui, sans-serif";
       context.fillText(placement.instance_id, rect.x + 4, rect.y + 14);
     }
@@ -804,17 +978,85 @@ function projectPoint(point, dimensions, scale, rect) {
 
 function drawBackgroundText(context, rect) {
   context.save();
-  context.fillStyle = "rgba(226, 232, 240, 0.76)";
+  context.fillStyle = "rgba(2, 6, 23, 0.72)";
+  context.fillRect(14, rect.height - 39, 268, 26);
+  context.strokeStyle = "rgba(125, 211, 252, 0.22)";
+  context.strokeRect(14, rect.height - 39, 268, 26);
+  context.fillStyle = "rgba(226, 232, 240, 0.88)";
   context.font = "13px system-ui, sans-serif";
   context.fillText("x = 长度方向，y = 截面宽度，z = 高度", 18, rect.height - 20);
   context.restore();
 }
 
+function drawFloorGrid(context, projector, dimensions) {
+  const floor = [
+    { x: 0, y: 0, z: 0 },
+    { x: dimensions.length, y: 0, z: 0 },
+    { x: dimensions.length, y: dimensions.maxY, z: 0 },
+    { x: 0, y: dimensions.maxY, z: 0 },
+  ];
+
+  context.save();
+  drawProjectedPolygon(context, floor, projector, {
+    fill: "rgba(15, 23, 42, 0.34)",
+    stroke: "rgba(125, 211, 252, 0.18)",
+    lineWidth: 1.2,
+  });
+
+  context.strokeStyle = "rgba(148, 163, 184, 0.17)";
+  context.lineWidth = 1;
+  const xStep = sceneGridStep(dimensions.length);
+  const yStep = sceneGridStep(dimensions.maxY);
+  for (let x = 0; x <= dimensions.length; x += xStep) {
+    drawPolyline(context, [{ x, y: 0, z: 0 }, { x, y: dimensions.maxY, z: 0 }], projector);
+  }
+  for (let y = 0; y <= dimensions.maxY; y += yStep) {
+    drawPolyline(context, [{ x: 0, y, z: 0 }, { x: dimensions.length, y, z: 0 }], projector);
+  }
+
+  context.strokeStyle = "rgba(226, 232, 240, 0.24)";
+  context.lineWidth = 1.6;
+  drawPolyline(context, [floor[0], floor[1], floor[2], floor[3], floor[0]], projector);
+  context.restore();
+}
+
+function sceneGridStep(size) {
+  const raw = Math.max(1, Number(size)) / 8;
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const normalized = raw / power;
+  if (normalized <= 2) {
+    return 2 * power;
+  }
+  if (normalized <= 5) {
+    return 5 * power;
+  }
+  return 10 * power;
+}
+
+function drawProjectedPolygon(context, points, projector, style) {
+  const projected = points.map(projector);
+  context.beginPath();
+  projected.forEach((point, index) => {
+    if (index === 0) {
+      context.moveTo(point.x, point.y);
+    } else {
+      context.lineTo(point.x, point.y);
+    }
+  });
+  context.closePath();
+  context.fillStyle = style.fill;
+  context.strokeStyle = style.stroke;
+  context.lineWidth = style.lineWidth ?? 1;
+  context.fill();
+  context.stroke();
+}
+
 function drawPrism(context, input, projector) {
   const faces = createPrismFaces(input).map((face) => ({
     ...face,
-    fill: "rgba(56, 189, 248, 0.045)",
-    stroke: "rgba(125, 211, 252, 0.2)",
+    fill: "rgba(56, 189, 248, 0.026)",
+    stroke: "rgba(125, 211, 252, 0.16)",
+    lineWidth: 0.8,
   }));
   drawFaces(context, faces, projector);
 }
@@ -844,8 +1086,10 @@ function drawPrismEdges(context, input, projector) {
   const front = input.uld.cross_section.map(([y, z]) => ({ x: 0, y, z }));
   const back = input.uld.cross_section.map(([y, z]) => ({ x: length, y, z }));
   context.save();
-  context.strokeStyle = "rgba(186, 230, 253, 0.9)";
-  context.lineWidth = 2;
+  context.strokeStyle = "rgba(186, 230, 253, 0.96)";
+  context.lineWidth = 2.4;
+  context.shadowColor = "rgba(56, 189, 248, 0.42)";
+  context.shadowBlur = 10;
   drawPolyline(context, [...front, front[0]], projector);
   drawPolyline(context, [...back, back[0]], projector);
   front.forEach((point, index) => drawPolyline(context, [point, back[index]], projector));
@@ -865,26 +1109,62 @@ function drawAxis(context, projector, start, end, label, color) {
   context.save();
   context.strokeStyle = color;
   context.fillStyle = color;
-  context.lineWidth = 2.4;
+  context.lineWidth = 3;
+  context.shadowColor = color;
+  context.shadowBlur = 6;
   context.beginPath();
   context.moveTo(a.x, a.y);
   context.lineTo(b.x, b.y);
   context.stroke();
+  drawAxisArrow(context, a, b);
+  context.shadowBlur = 0;
   context.font = "700 14px system-ui, sans-serif";
-  context.fillText(label, b.x + 6, b.y - 6);
+  const labelText = label;
+  const labelWidth = context.measureText(labelText).width + 14;
+  context.fillStyle = "rgba(15, 23, 42, 0.72)";
+  context.fillRect(b.x + 3, b.y - 22, labelWidth, 22);
+  context.strokeStyle = "rgba(255, 255, 255, 0.22)";
+  context.strokeRect(b.x + 3, b.y - 22, labelWidth, 22);
+  context.fillStyle = color;
+  context.fillText(labelText, b.x + 10, b.y - 6);
   context.restore();
 }
 
-function createBoxFaces(placement, index) {
+function drawAxisArrow(context, start, end) {
+  const angle = Math.atan2(end.y - start.y, end.x - start.x);
+  const size = 9;
+  context.beginPath();
+  context.moveTo(end.x, end.y);
+  context.lineTo(end.x - Math.cos(angle - Math.PI / 6) * size, end.y - Math.sin(angle - Math.PI / 6) * size);
+  context.moveTo(end.x, end.y);
+  context.lineTo(end.x - Math.cos(angle + Math.PI / 6) * size, end.y - Math.sin(angle + Math.PI / 6) * size);
+  context.stroke();
+}
+
+function createBoxFaces(placement, latestAnimatedId = null) {
+  const vertices = boxVertices(placement);
+  const color = colorForBox(placement.box_id);
+  const selected = placement.instance_id === state.selectedInstanceId;
+  const hovered = placement.instance_id === state.hoveredInstanceId;
+  const animated = placement.instance_id === latestAnimatedId;
+  return [
+    face([vertices.a, vertices.b, vertices.c, vertices.d], color, selected, hovered, animated, placement.instance_id, 0.52),
+    face([vertices.e, vertices.f, vertices.g, vertices.h], color, selected, hovered, animated, placement.instance_id, 0.96),
+    face([vertices.a, vertices.b, vertices.f, vertices.e], color, selected, hovered, animated, placement.instance_id, 0.78),
+    face([vertices.b, vertices.c, vertices.g, vertices.f], color, selected, hovered, animated, placement.instance_id, 0.7),
+    face([vertices.c, vertices.d, vertices.h, vertices.g], color, selected, hovered, animated, placement.instance_id, 0.62),
+    face([vertices.d, vertices.a, vertices.e, vertices.h], color, selected, hovered, animated, placement.instance_id, 0.74),
+  ];
+}
+
+function boxVertices(placement) {
   const x = Number(placement.x);
   const y = Number(placement.y);
   const z = Number(placement.z);
   const length = Number(placement.length);
   const width = Number(placement.width);
   const height = Number(placement.height);
-  const color = colorForBox(placement.box_id, index);
-  const selected = placement.instance_id === state.selectedInstanceId;
-  const vertices = {
+  return {
     a: { x, y, z },
     b: { x: x + length, y, z },
     c: { x: x + length, y: y + width, z },
@@ -894,25 +1174,91 @@ function createBoxFaces(placement, index) {
     g: { x: x + length, y: y + width, z: z + height },
     h: { x, y: y + width, z: z + height },
   };
+}
+
+function boxEdges(vertices) {
   return [
-    face([vertices.a, vertices.b, vertices.c, vertices.d], color, selected, placement.instance_id, 0.32),
-    face([vertices.e, vertices.f, vertices.g, vertices.h], color, selected, placement.instance_id, 0.74),
-    face([vertices.a, vertices.b, vertices.f, vertices.e], color, selected, placement.instance_id, 0.52),
-    face([vertices.b, vertices.c, vertices.g, vertices.f], color, selected, placement.instance_id, 0.46),
-    face([vertices.c, vertices.d, vertices.h, vertices.g], color, selected, placement.instance_id, 0.4),
-    face([vertices.d, vertices.a, vertices.e, vertices.h], color, selected, placement.instance_id, 0.48),
+    [vertices.a, vertices.b],
+    [vertices.b, vertices.c],
+    [vertices.c, vertices.d],
+    [vertices.d, vertices.a],
+    [vertices.e, vertices.f],
+    [vertices.f, vertices.g],
+    [vertices.g, vertices.h],
+    [vertices.h, vertices.e],
+    [vertices.a, vertices.e],
+    [vertices.b, vertices.f],
+    [vertices.c, vertices.g],
+    [vertices.d, vertices.h],
   ];
 }
 
-function face(points, color, selected, instanceId, alpha) {
+function face(points, color, selected, hovered, animated, instanceId, alpha) {
+  const style = boxFaceStyle(color, selected || animated, hovered, alpha);
   return {
     points,
     instanceId,
     selected,
-    fill: selected ? `rgba(${color.r}, ${color.g}, ${color.b}, 0.9)` : `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`,
-    stroke: selected ? "#fef08a" : `rgba(${Math.min(color.r + 48, 255)}, ${Math.min(color.g + 48, 255)}, ${Math.min(color.b + 48, 255)}, 0.9)`,
-    lineWidth: selected ? 2.8 : 1,
+    hovered,
+    animated,
+    ...style,
   };
+}
+
+function boxFaceStyle(color, selected, hovered, alpha) {
+  if (selected) {
+    const selectedColor = lightenColor(color, 0.1);
+    return {
+      fill: rgbaColor(selectedColor, 0.98),
+      stroke: "#fef08a",
+      lineWidth: 3.4,
+      shadow: "rgba(254, 240, 138, 0.55)",
+    };
+  }
+  if (hovered) {
+    const hoveredColor = lightenColor(color, 0.16);
+    return {
+      fill: rgbaColor(hoveredColor, 0.92),
+      stroke: rgbaColor(lightenColor(color, 0.62), 1),
+      lineWidth: 2.4,
+      shadow: "rgba(226, 232, 240, 0.35)",
+    };
+  }
+  return {
+    fill: rgbaColor(color, alpha),
+    stroke: rgbaColor(lightenColor(color, 0.38), 0.98),
+    lineWidth: 1.45,
+    shadow: "",
+  };
+}
+
+function drawBoxWireframes(context, placements, projector, latestAnimatedId) {
+  const mutedStroke = placements.length > 220 ? "rgba(15, 23, 42, 0.46)" : "rgba(15, 23, 42, 0.72)";
+  context.save();
+  context.lineJoin = "round";
+  context.lineCap = "round";
+  placements.forEach((placement) => {
+    drawBoxWireframe(context, placement, projector, latestAnimatedId, mutedStroke);
+  });
+  context.restore();
+}
+
+function drawBoxWireframe(context, placement, projector, latestAnimatedId, mutedStroke) {
+  const vertices = boxVertices(placement);
+  const highlighted =
+    placement.instance_id === state.selectedInstanceId ||
+    placement.instance_id === state.hoveredInstanceId ||
+    placement.instance_id === latestAnimatedId;
+  context.strokeStyle = highlighted ? "rgba(255, 255, 255, 0.88)" : mutedStroke;
+  context.lineWidth = highlighted ? 2.2 : 0.75;
+  boxEdges(vertices).forEach(([start, end]) => drawPolyline(context, [start, end], projector));
+}
+
+function currentAnimatedInstanceId(visiblePlacements) {
+  if (state.animation.visibleCount === null || visiblePlacements.length === 0) {
+    return null;
+  }
+  return visiblePlacements[visiblePlacements.length - 1].instance_id;
 }
 
 function drawFaces(context, faces, projector, hitRegions = null) {
@@ -941,6 +1287,8 @@ function drawFaces(context, faces, projector, hitRegions = null) {
     context.fillStyle = item.fill;
     context.strokeStyle = item.stroke;
     context.lineWidth = item.lineWidth ?? 1;
+    context.shadowColor = item.shadow || "transparent";
+    context.shadowBlur = item.shadow ? 12 : 0;
     context.fill();
     context.stroke();
     if (hitRegions && item.instanceId) {
@@ -963,34 +1311,53 @@ function drawPolyline(context, points, projector) {
   context.stroke();
 }
 
-function colorForBox(id, index) {
-  const palette = [
-    { r: 56, g: 189, b: 248 },
-    { r: 167, g: 139, b: 250 },
-    { r: 52, g: 211, b: 153 },
-    { r: 251, g: 191, b: 36 },
-    { r: 248, g: 113, b: 113 },
-    { r: 96, g: 165, b: 250 },
-  ];
-  let hash = index;
+function colorForBox(id) {
+  let hash = 0;
   for (const char of id) {
-    hash = (hash * 31 + char.charCodeAt(0)) % 997;
+    hash = (hash * 31 + char.charCodeAt(0)) % 9973;
   }
-  return palette[hash % palette.length];
+  return BOX_COLOR_PALETTE[hash % BOX_COLOR_PALETTE.length];
+}
+
+function lightenColor(color, ratio) {
+  return {
+    r: Math.round(color.r + (255 - color.r) * ratio),
+    g: Math.round(color.g + (255 - color.g) * ratio),
+    b: Math.round(color.b + (255 - color.b) * ratio),
+  };
+}
+
+function rgbaColor(color, alpha) {
+  return `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`;
 }
 
 function selectPlacement(instanceId, options = {}) {
   const activeResult = getActiveResult();
-  if (!instanceId || !activeResult?.placements.some((placement) => placement.instance_id === instanceId)) {
+  const placement = activeResult?.placements.find((item) => item.instance_id === instanceId);
+  if (!instanceId || !placement) {
     return;
   }
   state.selectedInstanceId = instanceId;
+  if (options.focusSameBoxType) {
+    setSceneBoxFocus(placement.box_id);
+  } else {
+    clearSceneBoxFocus();
+  }
   if (options.syncSlice) {
     syncSliceToSelectedPlacement();
   }
   renderSelectedBoxDetails();
   updateSelectedRow();
   drawAllViews();
+}
+
+function setSceneBoxFocus(boxId) {
+  state.focusedBoxId = boxId;
+  resetAnimationState({ showFull: true });
+}
+
+function clearSceneBoxFocus() {
+  state.focusedBoxId = null;
 }
 
 function syncSliceToSelectedPlacement() {
@@ -1016,6 +1383,7 @@ function renderSelectedBoxDetails() {
   elements.selectedBoxDetails.innerHTML = `
     <strong>${escapeHtml(placement.instance_id)}</strong>
     <div>类型：<code>${escapeHtml(placement.box_id)}</code></div>
+    ${state.focusedBoxId === placement.box_id ? `<div>3D 聚焦同类箱子：<code>${escapeHtml(placement.box_id)}</code></div>` : ""}
     <div>x：<code>${formatNumber(placement.x)} ~ ${formatNumber(placement.x + placement.length)}</code></div>
     <div>y：<code>${formatNumber(placement.y)} ~ ${formatNumber(placement.y + placement.width)}</code></div>
     <div>z：<code>${formatNumber(placement.z)} ~ ${formatNumber(placement.z + placement.height)}</code></div>
@@ -1037,13 +1405,72 @@ function selectScenePlacementAtPointer(event) {
   if (state.pointer.moved) {
     return;
   }
-  const point = canvasPoint(event, elements.canvas);
-  const match = [...state.hitRegions.scene]
-    .sort((first, second) => second.depth - first.depth)
-    .find((region) => pointInPolygon2D(point, region.polygon));
+  const match = sceneMatchAtPoint(event);
   if (match) {
     selectPlacement(match.instanceId, { syncSlice: true });
   }
+}
+
+function updateHoveredScenePlacement(event) {
+  const match = sceneMatchAtPoint(event);
+  const nextInstanceId = match?.instanceId ?? null;
+  if (!nextInstanceId) {
+    clearHoveredScenePlacement();
+    return;
+  }
+
+  const placement = placementByInstanceId(nextInstanceId);
+  if (state.hoveredInstanceId !== nextInstanceId) {
+    state.hoveredInstanceId = nextInstanceId;
+    drawScene();
+  }
+  renderSceneTooltip(event, placement);
+}
+
+function clearHoveredScenePlacement() {
+  if (state.hoveredInstanceId) {
+    state.hoveredInstanceId = null;
+    drawScene();
+  }
+  hideSceneTooltip();
+}
+
+function sceneMatchAtPoint(event) {
+  const point = canvasPoint(event, elements.canvas);
+  return [...state.hitRegions.scene]
+    .sort((first, second) => second.depth - first.depth)
+    .find((region) => pointInPolygon2D(point, region.polygon));
+}
+
+function placementByInstanceId(instanceId) {
+  return getActiveResult()?.placements.find((placement) => placement.instance_id === instanceId) ?? null;
+}
+
+function renderSceneTooltip(event, placement) {
+  if (!placement) {
+    hideSceneTooltip();
+    return;
+  }
+  elements.sceneTooltip.innerHTML = `
+    <strong>${escapeHtml(placement.instance_id)}</strong>
+    <div>类型：${escapeHtml(placement.box_id)}</div>
+    <div>尺寸：${formatNumber(placement.length)} × ${formatNumber(placement.width)} × ${formatNumber(placement.height)}</div>
+    <div>坐标：x ${formatNumber(placement.x)}，y ${formatNumber(placement.y)}，z ${formatNumber(placement.z)}</div>
+  `;
+  elements.sceneTooltip.classList.add("visible");
+
+  const stageRect = elements.sceneStage.getBoundingClientRect();
+  const tooltipRect = elements.sceneTooltip.getBoundingClientRect();
+  const maxLeft = Math.max(8, stageRect.width - tooltipRect.width - 8);
+  const maxTop = Math.max(8, stageRect.height - tooltipRect.height - 8);
+  const left = clamp(event.clientX - stageRect.left + 14, 8, maxLeft);
+  const top = clamp(event.clientY - stageRect.top + 14, 8, maxTop);
+  elements.sceneTooltip.style.left = `${left}px`;
+  elements.sceneTooltip.style.top = `${top}px`;
+}
+
+function hideSceneTooltip() {
+  elements.sceneTooltip?.classList.remove("visible");
 }
 
 function selectProjectionPlacementAtPointer(event, viewKey) {
@@ -1052,6 +1479,11 @@ function selectProjectionPlacementAtPointer(event, viewKey) {
   if (match) {
     selectPlacement(match.instanceId, { syncSlice: viewKey !== "section" });
   }
+}
+
+function focusProjectionCameraView(event, viewKey) {
+  setCameraView(viewKey);
+  selectProjectionPlacementAtPointer(event, viewKey);
 }
 
 function canvasPoint(event, canvas) {
@@ -1104,10 +1536,12 @@ function startPointerDrag(event) {
   state.pointer.x = event.clientX;
   state.pointer.y = event.clientY;
   state.pointer.moved = false;
+  hideSceneTooltip();
 }
 
 function movePointerDrag(event) {
   if (!state.pointer.active) {
+    updateHoveredScenePlacement(event);
     return;
   }
   const deltaX = event.clientX - state.pointer.x;
@@ -1169,6 +1603,14 @@ function clearError() {
 
 function formatNumber(value) {
   return Number(value).toFixed(0);
+}
+
+function formatPercent(value) {
+  return `${(Number(value ?? 0) * 100).toFixed(2)}%`;
+}
+
+function formatSpeed(value) {
+  return Number(value).toFixed(1).replace(".0", "");
 }
 
 function clamp(value, min, max) {

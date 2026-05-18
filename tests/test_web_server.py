@@ -47,7 +47,7 @@ class WebServerTests(unittest.TestCase):
             with urllib.request.urlopen(f"{self._base_url(server)}/", timeout=5) as response:
                 content = response.read().decode("utf-8")
 
-            self.assertIn("ULD 装箱可视化", content)
+            self.assertIn("Multi ULD Profile Packing", content)
             self.assertIn("app.js", content)
         finally:
             server.shutdown()

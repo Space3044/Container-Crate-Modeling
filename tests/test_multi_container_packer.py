@@ -193,6 +193,127 @@ class MultiContainerPackerTests(unittest.TestCase):
         )
         self.assertTrue(result.validation_passed)
 
+    def test_pack_multi_profile_handles_field_like_mixed_air_cargo_manifest(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="ULD-A",
+                    length=318,
+                    cross_section=[(0, 0), (224, 0), (224, 115), (178, 163), (0, 163)],
+                    quantity=1,
+                ),
+                ContainerSpec(
+                    id="ULD-B",
+                    length=244,
+                    cross_section=[(0, 0), (156, 0), (156, 114), (124, 153), (0, 153)],
+                    quantity=1,
+                ),
+            ],
+            boxes=[
+                BoxSpec(id="MAIL-TRAY", length=60, width=40, height=35, quantity=12, rotatable=True),
+                BoxSpec(id="E-COM-CARTON", length=80, width=60, height=45, quantity=8, rotatable=True),
+                BoxSpec(id="SPARE-PART-CASE", length=120, width=80, height=55, quantity=3, rotatable=True),
+                BoxSpec(id="TALL-CARTON", length=70, width=50, height=90, quantity=2, rotatable=True),
+                BoxSpec(id="OVERSIZE-TALL", length=90, width=60, height=170, quantity=1, rotatable=True),
+            ],
+        )
+
+        result = pack_multi_profile(problem)
+
+        self.assertEqual(result.loaded_count, 25)
+        self.assertEqual(result.unloaded_count, 1)
+        self.assertEqual(result.used_volume, 4950000)
+        self.assertEqual(
+            [(item.box_id, item.quantity) for item in result.loaded],
+            [("E-COM-CARTON", 8), ("MAIL-TRAY", 12), ("SPARE-PART-CASE", 3), ("TALL-CARTON", 2)],
+        )
+        self.assertEqual([(item.box_id, item.quantity) for item in result.unloaded], [("OVERSIZE-TALL", 1)])
+        used_containers = [container for container in result.containers if container.result.loaded_count > 0]
+        self.assertEqual([container.container_id for container in used_containers], ["ULD-A-001"])
+        self.assertTrue(result.validation_passed)
+
+    def test_pack_multi_profile_keeps_repeated_quantity_results_monotonic_for_default_uld(self):
+        def pack_default_quantity(quantity: int):
+            return pack_multi_profile(
+                MultiContainerPackingInput(
+                    containers=[
+                        ContainerSpec(
+                            id="ULD-A",
+                            length=300,
+                            cross_section=[(0, 0), (220, 0), (220, 110), (170, 160), (0, 160)],
+                            quantity=1,
+                        )
+                    ],
+                    boxes=[
+                        BoxSpec(id="BOX-A", length=60, width=40, height=30, quantity=quantity, rotatable=True),
+                    ],
+                )
+            )
+
+        fifty_result = pack_default_quantity(50)
+        two_hundred_result = pack_default_quantity(200)
+
+        self.assertEqual(fifty_result.loaded_count, 50)
+        self.assertGreaterEqual(two_hundred_result.loaded_count, 99)
+        self.assertTrue(fifty_result.validation_passed)
+        self.assertTrue(two_hundred_result.validation_passed)
+
+    def test_pack_multi_profile_keeps_usable_candidate_points_for_many_uld_instances(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="ULD-A",
+                    length=300,
+                    cross_section=[(0, 0), (220, 0), (220, 110), (170, 160), (0, 160)],
+                    quantity=12,
+                )
+            ],
+            boxes=[
+                BoxSpec(id="BOX-A", length=60, width=40, height=30, quantity=1200, rotatable=True),
+            ],
+        )
+
+        result = pack_multi_profile(problem)
+
+        self.assertGreaterEqual(result.loaded_count, 700)
+        self.assertTrue(result.validation_passed)
+
+    def test_pack_multi_profile_keeps_layer_candidates_for_many_uld_and_box_types(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="ULD-LARGE",
+                    length=318,
+                    cross_section=[(0, 0), (224, 0), (224, 115), (178, 163), (0, 163)],
+                    quantity=10,
+                ),
+                ContainerSpec(
+                    id="ULD-MEDIUM",
+                    length=244,
+                    cross_section=[(0, 0), (156, 0), (156, 114), (124, 153), (0, 153)],
+                    quantity=10,
+                ),
+            ],
+            boxes=[
+                BoxSpec(
+                    id=f"BOX-{index:02d}",
+                    length=40 + (index % 5) * 10,
+                    width=30 + (index % 4) * 10,
+                    height=25 + (index % 6) * 5,
+                    quantity=40,
+                    rotatable=True,
+                )
+                for index in range(25)
+            ],
+        )
+
+        result = pack_multi_profile(problem)
+
+        self.assertEqual(result.loaded_count, 1000)
+        self.assertEqual(result.unloaded_count, 0)
+        self.assertGreaterEqual(result.volume_utilization, 0.58)
+        self.assertTrue(result.validation_passed)
+
     def test_global_search_limits_candidate_box_types_for_large_type_sets(self):
         problem = MultiContainerPackingInput(
             containers=[

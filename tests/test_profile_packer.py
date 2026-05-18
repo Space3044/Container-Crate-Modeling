@@ -1,8 +1,8 @@
 import unittest
 
 import cargo_loading.profile_packer as profile_packer
-from cargo_loading.profile_packer import pack_profile
-from cargo_loading.profile_models import BoxSpec, ProfilePackingInput, ULDProfile
+from cargo_loading.profile_packer import pack_profile, validate_profile_packing
+from cargo_loading.profile_models import BoxPlacement, BoxSpec, ProfilePackingInput, ULDProfile
 
 
 class ProfilePackerTests(unittest.TestCase):
@@ -108,6 +108,44 @@ class ProfilePackerTests(unittest.TestCase):
 
         self.assertEqual(result.loaded_count, 0)
         self.assertEqual(result.unloaded_count, 1)
+
+    def test_validate_profile_packing_rejects_stacked_box_with_insufficient_support(self):
+        problem = ProfilePackingInput(
+            uld=ULDProfile(
+                id="ULD-001",
+                length=160,
+                cross_section=[(0, 0), (60, 0), (60, 80), (0, 80)],
+            ),
+            boxes=[],
+        )
+        placements = [
+            BoxPlacement("BASE-L", "BASE-L-001", 0, 0, 0, 50, 50, 30),
+            BoxPlacement("BASE-R", "BASE-R-001", 100, 0, 0, 50, 50, 30),
+            BoxPlacement("TOP", "TOP-001", 0, 0, 30, 150, 50, 20),
+        ]
+
+        errors = validate_profile_packing(problem, placements)
+
+        self.assertIn("TOP-001 has insufficient bottom support", errors)
+
+    def test_validate_profile_packing_uses_only_boxes_touching_the_same_support_height(self):
+        problem = ProfilePackingInput(
+            uld=ULDProfile(
+                id="ULD-001",
+                length=220,
+                cross_section=[(0, 0), (120, 0), (120, 90), (0, 90)],
+            ),
+            boxes=[],
+        )
+        placements = [
+            BoxPlacement("LOW", "LOW-001", 0, 0, 0, 100, 100, 30),
+            BoxPlacement("TALL", "TALL-001", 100, 0, 0, 100, 100, 50),
+            BoxPlacement("TOP", "TOP-001", 0, 0, 50, 200, 100, 20),
+        ]
+
+        errors = validate_profile_packing(problem, placements)
+
+        self.assertIn("TOP-001 has insufficient bottom support", errors)
 
     def test_pack_profile_keeps_multiple_partial_layouts_with_beam_search(self):
         problem = ProfilePackingInput(

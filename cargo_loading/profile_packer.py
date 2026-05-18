@@ -27,6 +27,7 @@ MAX_GLOBAL_BOX_TYPE_CANDIDATES = 8
 MAX_GLOBAL_CONTAINER_CANDIDATES = 12
 MAX_BATCH_PLACEMENTS = 8
 MAX_GLOBAL_SEARCH_STEPS = 1000
+MIN_BOTTOM_SUPPORT_RATIO = 0.8
 
 
 @dataclass
@@ -104,7 +105,7 @@ def _pack_profile_ordered(
                 next_states.append(
                     PackingState(
                         placements=[*state.placements, placement],
-                        candidate_points=_prune_candidate_points(candidate_points, problem),
+                        candidate_points=_prune_candidate_points(candidate_points, problem, [*state.placements, placement]),
                         unloaded_counter=state.unloaded_counter.copy(),
                     )
                 )
@@ -233,7 +234,7 @@ def _global_search_limits(problem: MultiContainerPackingInput) -> SearchLimits:
     total_quantity = sum(box.quantity for box in problem.boxes)
     container_count = sum(container.quantity for container in problem.containers)
     box_type_count = len(problem.boxes)
-    if total_quantity >= 200 or container_count >= 12 or box_type_count >= 20:
+    if container_count >= 12 or box_type_count >= 20:
         return SearchLimits(
             beam_width=3,
             box_type_candidates=2,
@@ -242,9 +243,9 @@ def _global_search_limits(problem: MultiContainerPackingInput) -> SearchLimits:
             global_branches_per_state=8,
             batch_placements=30,
             max_steps=200,
-            candidate_points=12,
+            candidate_points=30,
         )
-    if total_quantity >= 30 or container_count >= 8 or box_type_count >= 10:
+    if container_count >= 8 or box_type_count >= 10:
         return SearchLimits(
             beam_width=6,
             box_type_candidates=3,
@@ -254,6 +255,17 @@ def _global_search_limits(problem: MultiContainerPackingInput) -> SearchLimits:
             batch_placements=16,
             max_steps=300,
             candidate_points=20,
+        )
+    if total_quantity >= 30:
+        return SearchLimits(
+            beam_width=6,
+            box_type_candidates=MAX_GLOBAL_BOX_TYPE_CANDIDATES,
+            container_candidates=MAX_GLOBAL_CONTAINER_CANDIDATES,
+            placement_branches=2,
+            global_branches_per_state=16,
+            batch_placements=16,
+            max_steps=300,
+            candidate_points=80,
         )
     return SearchLimits(
         beam_width=DEFAULT_BEAM_WIDTH,
@@ -488,6 +500,7 @@ def _place_box_in_global_state(
     next_candidate_points = _prune_candidate_points(
         [*container_state.candidate_points, *_new_candidate_points(placement)],
         profile_input,
+        [*container_state.placements, placement],
         max_points=limits.candidate_points,
     )
     next_container = ContainerState(
@@ -516,15 +529,16 @@ def _select_global_beam_states(
     )[:beam_width]
 
 
-def _global_state_score(problem: MultiContainerPackingInput, state: GlobalPackingState) -> tuple[float, int, float, float, float]:
+def _global_state_score(problem: MultiContainerPackingInput, state: GlobalPackingState) -> tuple[float, int, float, int, float, float]:
     used_volume = sum(placement.volume for container in state.containers for placement in container.placements)
     loaded_count = sum(len(container.placements) for container in state.containers)
     unloaded_count = sum(quantity for quantity in state.remaining_counter.values() if quantity > 0)
     compactness = sum(_container_bounding_volume(container) for container in state.containers)
-    utilization_spread = _utilization_spread(state.containers)
+    used_container_count = _used_container_count(state.containers)
+    active_container_utilization = _active_container_utilization(state.containers)
     if problem.objective == "maximize_count":
-        return (loaded_count, used_volume, -unloaded_count, -compactness, -utilization_spread)
-    return (used_volume, loaded_count, -unloaded_count, -compactness, -utilization_spread)
+        return (loaded_count, used_volume, -unloaded_count, -used_container_count, active_container_utilization, -compactness)
+    return (used_volume, loaded_count, -unloaded_count, -used_container_count, active_container_utilization, -compactness)
 
 
 def _global_state_signature(state: GlobalPackingState) -> tuple[object, ...]:
@@ -623,13 +637,20 @@ def _container_bounding_volume(container: ContainerState) -> float:
     return max_x * max_y * max_z
 
 
-def _utilization_spread(containers: list[ContainerState]) -> float:
-    utilizations = []
+def _used_container_count(containers: list[ContainerState]) -> int:
+    return sum(1 for container in containers if container.placements)
+
+
+def _active_container_utilization(containers: list[ContainerState]) -> float:
+    used_volume = 0
+    active_volume = 0
     for container in containers:
+        if not container.placements:
+            continue
         volume = container.spec.length * polygon_area(container.spec.cross_section)
-        used_volume = sum(placement.volume for placement in container.placements)
-        utilizations.append(used_volume / volume if volume else 0)
-    return max(utilizations, default=0) - min(utilizations, default=0)
+        active_volume += volume
+        used_volume += sum(placement.volume for placement in container.placements)
+    return used_volume / active_volume if active_volume else 0
 
 
 def validate_profile_packing(problem: ProfilePackingInput, placements: list[BoxPlacement]) -> list[str]:
@@ -647,6 +668,9 @@ def validate_profile_packing(problem: ProfilePackingInput, placements: list[BoxP
             polygon=problem.uld.cross_section,
         ):
             errors.append(f"{placement.instance_id} exceeds ULD cross_section")
+        supporters = [existing for existing in placements if existing is not placement]
+        if not _placement_has_enough_support(placement, supporters):
+            errors.append(f"{placement.instance_id} has insufficient bottom support")
 
     for index, first in enumerate(placements):
         for second in placements[index + 1 :]:
@@ -812,7 +836,9 @@ def _placement_is_valid(problem: ProfilePackingInput, placement: BoxPlacement, p
         polygon=problem.uld.cross_section,
     ):
         return False
-    return not any(placements_overlap(placement, existing) for existing in placements)
+    if any(placements_overlap(placement, existing) for existing in placements):
+        return False
+    return _placement_has_enough_support(placement, placements)
 
 
 def _new_candidate_points(placement: BoxPlacement) -> list[Point3D]:
@@ -826,11 +852,15 @@ def _new_candidate_points(placement: BoxPlacement) -> list[Point3D]:
 def _prune_candidate_points(
     candidate_points: list[Point3D],
     problem: ProfilePackingInput,
+    placements: list[BoxPlacement] | None = None,
     max_points: int | None = None,
 ) -> list[Point3D]:
     points = []
+    placements = placements or []
     for point in set(candidate_points):
         x, y, z = point
+        if any(_point_inside_placement(point, placement) for placement in placements):
+            continue
         if x <= problem.uld.length and rectangle_inside_polygon(
             y=y,
             z=z,
@@ -839,5 +869,79 @@ def _prune_candidate_points(
             polygon=problem.uld.cross_section,
         ):
             points.append(point)
-    sorted_points = sorted(points, key=lambda item: (item[2], item[1], item[0]))
-    return sorted_points[:max_points] if max_points is not None else sorted_points
+    sorted_points = sorted(points, key=_candidate_point_sort_key)
+    if max_points is None or len(sorted_points) <= max_points:
+        return sorted_points
+    return _select_diverse_candidate_points(sorted_points, max_points)
+
+
+def _candidate_point_sort_key(point: Point3D) -> tuple[float, float, float]:
+    return (point[2], point[1], point[0])
+
+
+def _select_diverse_candidate_points(sorted_points: list[Point3D], max_points: int) -> list[Point3D]:
+    if max_points <= 0:
+        return []
+
+    selected: list[Point3D] = []
+    seen: set[Point3D] = set()
+
+    floor_quota = max(1, max_points // 3)
+    for point in sorted_points[:floor_quota]:
+        selected.append(point)
+        seen.add(point)
+
+    layers: dict[float, list[Point3D]] = {}
+    for point in sorted_points:
+        layers.setdefault(point[2], []).append(point)
+
+    layer_index = 0
+    layer_heights = sorted(layers)
+    while len(selected) < max_points:
+        progressed = False
+        for height in layer_heights:
+            layer = layers[height]
+            if layer_index >= len(layer):
+                continue
+            progressed = True
+            point = layer[layer_index]
+            if point in seen:
+                continue
+            selected.append(point)
+            seen.add(point)
+            if len(selected) >= max_points:
+                break
+        if not progressed:
+            break
+        layer_index += 1
+
+    return sorted(selected, key=_candidate_point_sort_key)
+
+
+def _point_inside_placement(point: Point3D, placement: BoxPlacement) -> bool:
+    x, y, z = point
+    return (
+        placement.x <= x < placement.x + placement.length
+        and placement.y <= y < placement.y + placement.width
+        and placement.z <= z < placement.z + placement.height
+    )
+
+
+def _placement_has_enough_support(placement: BoxPlacement, placements: list[BoxPlacement]) -> bool:
+    if placement.z == 0:
+        return True
+    support_area = sum(_support_overlap_area(placement, existing) for existing in placements)
+    bottom_area = placement.length * placement.width
+    return support_area >= bottom_area * MIN_BOTTOM_SUPPORT_RATIO
+
+
+def _support_overlap_area(placement: BoxPlacement, supporter: BoxPlacement) -> float:
+    if abs((supporter.z + supporter.height) - placement.z) > 1e-9:
+        return 0
+    overlap_length = _axis_overlap(placement.x, placement.x + placement.length, supporter.x, supporter.x + supporter.length)
+    overlap_width = _axis_overlap(placement.y, placement.y + placement.width, supporter.y, supporter.y + supporter.width)
+    return overlap_length * overlap_width
+
+
+def _axis_overlap(first_start: float, first_end: float, second_start: float, second_end: float) -> float:
+    return max(0, min(first_end, second_end) - max(first_start, second_start))
