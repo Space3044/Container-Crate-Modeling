@@ -1,7 +1,7 @@
 const fallbackInput = {
   containers: [
     {
-      id: "ULD",
+      id: "ULD-A",
       length: 300,
       quantity: 1,
       cross_section: [
@@ -15,7 +15,6 @@ const fallbackInput = {
   ],
   boxes: [
     { id: "BOX-A", length: 60, width: 40, height: 30, quantity: 10, rotatable: true },
-    { id: "BOX-B", length: 100, width: 80, height: 50, quantity: 4, rotatable: true },
   ],
   objective: "maximize_volume",
 };
@@ -196,6 +195,7 @@ function normalizeInput(input) {
 
 function addContainerRow(container = {}) {
   const row = document.createElement("tr");
+  const id = container.id ?? nextAlphabeticId("ULD", ".container-id");
   const crossSection = container.cross_section ?? [
     [0, 0],
     [220, 0],
@@ -204,7 +204,7 @@ function addContainerRow(container = {}) {
     [0, 160],
   ];
   row.innerHTML = `
-    <td><input class="container-id" type="text" value="${escapeAttribute(container.id ?? "ULD")}" aria-label="ULD ID" /></td>
+    <td><input class="container-id" type="text" value="${escapeAttribute(id)}" aria-label="ULD ID" /></td>
     <td><input class="container-length" type="number" min="1" step="1" value="${container.length ?? 300}" aria-label="ULD 长度" /></td>
     <td><input class="container-quantity" type="number" min="1" step="1" value="${container.quantity ?? 1}" aria-label="ULD 数量" /></td>
     <td><textarea class="container-cross-section" rows="3" aria-label="ULD y-z 截面点">${escapeHtml(JSON.stringify(crossSection))}</textarea></td>
@@ -216,17 +216,39 @@ function addContainerRow(container = {}) {
 
 function addBoxRow(box = {}) {
   const row = document.createElement("tr");
+  const id = box.id ?? nextAlphabeticId("BOX", ".box-id");
   row.innerHTML = `
-    <td><input class="box-id" type="text" value="${escapeAttribute(box.id ?? "BOX")}" aria-label="箱子 ID" /></td>
+    <td><input class="box-id" type="text" value="${escapeAttribute(id)}" aria-label="箱子 ID" /></td>
     <td><input class="box-length" type="number" min="1" step="1" value="${box.length ?? 60}" aria-label="箱子长度" /></td>
     <td><input class="box-width" type="number" min="1" step="1" value="${box.width ?? 40}" aria-label="箱子宽度" /></td>
     <td><input class="box-height" type="number" min="1" step="1" value="${box.height ?? 30}" aria-label="箱子高度" /></td>
     <td><input class="box-quantity" type="number" min="0" step="1" value="${box.quantity ?? 1}" aria-label="箱子数量" /></td>
-    <td><input class="box-rotatable" type="checkbox" ${box.rotatable ?? true ? "checked" : ""} aria-label="允许旋转" /></td>
+    <td><input class="box-rotatable" type="checkbox" ${box.rotatable ?? true ? "checked" : ""} aria-label="允许长宽互换" /></td>
     <td><button class="icon-button" type="button" aria-label="删除箱子">×</button></td>
   `;
   row.querySelector("button").addEventListener("click", () => row.remove());
   elements.boxTableBody.appendChild(row);
+}
+
+function nextAlphabeticId(prefix, selector) {
+  const usedIds = new Set([...document.querySelectorAll(selector)].map((input) => input.value.trim()));
+  let index = 0;
+  let id = `${prefix}-${alphabeticLabel(index)}`;
+  while (usedIds.has(id)) {
+    index += 1;
+    id = `${prefix}-${alphabeticLabel(index)}`;
+  }
+  return id;
+}
+
+function alphabeticLabel(index) {
+  let value = index;
+  let label = "";
+  do {
+    label = String.fromCharCode(65 + (value % 26)) + label;
+    value = Math.floor(value / 26) - 1;
+  } while (value >= 0);
+  return label;
 }
 
 async function calculatePacking() {

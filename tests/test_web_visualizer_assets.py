@@ -1,4 +1,5 @@
 import unittest
+import json
 from pathlib import Path
 
 
@@ -29,7 +30,9 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("当前 ULD", html)
         self.assertIn("选择要查看的 ULD 实例", html)
         self.assertIn("<th>ID</th>", html)
+        self.assertIn("<th>长宽互换</th>", html)
         self.assertNotIn("<th>类型</th>", html)
+        self.assertNotIn("<th>旋转</th>", html)
         self.assertNotIn("容器", html)
 
     def test_visualizer_script_contains_projection_and_selection_behaviors(self):
@@ -69,6 +72,23 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertNotIn("缺少类型", script)
         self.assertIn("AXIS_EXTENSION_FACTOR", script)
         self.assertIn("dimensions.length * AXIS_EXTENSION_FACTOR", script)
+        self.assertIn("允许长宽互换", script)
+        self.assertNotIn("允许旋转", script)
+
+    def test_visualizer_defaults_to_one_sample_row_and_auto_ids_new_rows(self):
+        script = Path("web/app.js").read_text(encoding="utf-8")
+        sample = json.loads(Path("data/profile_packing_input.json").read_text(encoding="utf-8"))
+
+        self.assertIn('id: "ULD-A"', script)
+        self.assertIn('id: "BOX-A"', script)
+        self.assertNotIn('id: "ULD-B"', script)
+        self.assertNotIn('id: "BOX-B"', script)
+        self.assertIn("function nextAlphabeticId", script)
+        self.assertIn("function alphabeticLabel", script)
+        self.assertIn('nextAlphabeticId("ULD", ".container-id")', script)
+        self.assertIn('nextAlphabeticId("BOX", ".box-id")', script)
+        self.assertEqual([container["id"] for container in sample["containers"]], ["ULD-A"])
+        self.assertEqual([box["id"] for box in sample["boxes"]], ["BOX-A"])
 
 
 if __name__ == "__main__":
