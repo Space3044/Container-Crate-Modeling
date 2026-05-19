@@ -18,6 +18,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "sliceSlider",
             "sliceValue",
             "loadedList",
+            "historyList",
             "activeContainerStats",
             "selectedBoxDetails",
             "isometricViewButton",
@@ -45,6 +46,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertNotIn('class="input-actions"', html)
         self.assertNotIn("<h1>ULD 装箱可视化</h1>", html)
         self.assertIn("当前 ULD", html)
+        self.assertIn("最近10次计算记录", html)
         self.assertIn("装箱动画", html)
         self.assertIn("播放动画", html)
         self.assertIn("倍速", html)
@@ -90,6 +92,12 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "renderActiveContainerDetails",
             "renderActiveContainerStats",
             "renderUnloadedList",
+            "loadHistoryRecords",
+            "saveHistoryRecords",
+            "addHistoryRecord",
+            "renderHistoryRecords",
+            "selectHistoryRecord",
+            "historyRecordLabel",
             "updateHoveredScenePlacement",
             "clearHoveredScenePlacement",
             "renderSceneTooltip",
@@ -140,6 +148,10 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("function lightenColor(color, ratio)", script)
         self.assertIn("function rgbaColor(color, alpha)", script)
         self.assertIn("focusedBoxId", script)
+        self.assertIn("MAX_HISTORY_RECORDS = 10", script)
+        self.assertIn("HISTORY_STORAGE_KEY", script)
+        self.assertIn("localStorage", script)
+        self.assertIn("state.historyRecords", script)
         self.assertIn('selectPlacement(row.dataset.instanceId, { syncSlice: true, focusSameBoxType: true })', script)
         self.assertIn("state.focusedBoxId ? placements.filter((placement) => placement.box_id === state.focusedBoxId) : placements", script)
         self.assertIn("3D 聚焦同类箱子", script)
@@ -158,6 +170,8 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn(".panel-title", css)
         self.assertIn(".section-card", css)
         self.assertIn(".result-section", css)
+        self.assertIn(".history-list", css)
+        self.assertIn(".history-record", css)
         self.assertIn("minmax(370px, 0.95fr) minmax(640px, 1.9fr) minmax(350px, 0.92fr)", css)
         self.assertIn("grid-template-rows: auto minmax(560px, 1fr) auto auto", css)
         self.assertIn("min-height: 900px", css)

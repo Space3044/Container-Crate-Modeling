@@ -21,6 +21,8 @@ const fallbackInput = {
 
 const AXIS_EXTENSION_FACTOR = 1.18;
 const BOX_ANIMATION_INTERVAL_MS = 320;
+const MAX_HISTORY_RECORDS = 10;
+const HISTORY_STORAGE_KEY = "uld-packing-history";
 const BOX_COLOR_PALETTE = [
   { r: 14, g: 165, b: 233 },
   { r: 245, g: 158, b: 11 },
@@ -41,8 +43,10 @@ const state = {
   result: null,
   selectedContainerId: null,
   selectedInstanceId: null,
+  selectedHistoryId: null,
   hoveredInstanceId: null,
   focusedBoxId: null,
+  historyRecords: [],
   sliceX: 0,
   camera: {
     yaw: -0.72,
@@ -81,8 +85,10 @@ document.addEventListener("DOMContentLoaded", init);
 async function init() {
   cacheElements();
   bindEvents();
+  state.historyRecords = loadHistoryRecords();
+  renderHistoryRecords();
   await loadSample();
-  await calculatePacking();
+  await calculatePacking({ recordHistory: false });
   window.addEventListener("resize", drawAllViews);
 }
 
@@ -108,6 +114,7 @@ function cacheElements() {
   elements.sliceValue = document.getElementById("sliceValue");
   elements.errorMessage = document.getElementById("errorMessage");
   elements.summaryCards = document.getElementById("summaryCards");
+  elements.historyList = document.getElementById("historyList");
   elements.loadedList = document.getElementById("loadedList");
   elements.unloadedList = document.getElementById("unloadedList");
   elements.activeContainerStats = document.getElementById("activeContainerStats");
@@ -124,7 +131,7 @@ function cacheElements() {
 function bindEvents() {
   elements.addContainerButton.addEventListener("click", () => addContainerRow());
   elements.addBoxButton.addEventListener("click", () => addBoxRow());
-  elements.calculateButton.addEventListener("click", calculatePacking);
+  elements.calculateButton.addEventListener("click", () => calculatePacking());
   elements.containerSelector.addEventListener("change", () => selectContainer(elements.containerSelector.value));
   elements.loadSampleButton.addEventListener("click", async () => {
     await loadSample();
@@ -290,7 +297,7 @@ function alphabeticLabel(index) {
   return label;
 }
 
-async function calculatePacking() {
+async function calculatePacking(options = {}) {
   try {
     stopPackingAnimation();
     setBusy(true);
@@ -307,6 +314,9 @@ async function calculatePacking() {
     }
     state.input = input;
     state.result = data.result;
+    if (options.recordHistory !== false) {
+      addHistoryRecord(input, data.result);
+    }
     state.selectedContainerId = null;
     state.selectedInstanceId = null;
     state.hoveredInstanceId = null;
@@ -321,6 +331,103 @@ async function calculatePacking() {
   } finally {
     setBusy(false);
   }
+}
+
+function loadHistoryRecords() {
+  try {
+    const records = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || "[]");
+    if (!Array.isArray(records)) {
+      return [];
+    }
+    return records
+      .filter((record) => record?.id && record?.input && record?.result)
+      .slice(0, MAX_HISTORY_RECORDS);
+  } catch {
+    return [];
+  }
+}
+
+function saveHistoryRecords() {
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(state.historyRecords.slice(0, MAX_HISTORY_RECORDS)));
+  } catch {
+    // Ignore storage failures. The current calculation result is still usable.
+  }
+}
+
+function addHistoryRecord(input, result) {
+  const record = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    input: structuredClone(input),
+    result: structuredClone(result),
+  };
+  state.historyRecords = [record, ...state.historyRecords].slice(0, MAX_HISTORY_RECORDS);
+  state.selectedHistoryId = record.id;
+  saveHistoryRecords();
+  renderHistoryRecords();
+}
+
+function renderHistoryRecords() {
+  if (!elements.historyList) {
+    return;
+  }
+  if (state.historyRecords.length === 0) {
+    elements.historyList.textContent = "暂无计算记录";
+    elements.historyList.classList.add("muted-text");
+    return;
+  }
+  elements.historyList.classList.remove("muted-text");
+  elements.historyList.innerHTML = state.historyRecords
+    .map((record) => {
+      const active = record.id === state.selectedHistoryId ? " active" : "";
+      return `
+        <button type="button" class="history-record${active}" data-history-id="${escapeAttribute(record.id)}">
+          ${historyRecordLabel(record)}
+        </button>
+      `;
+    })
+    .join("");
+  elements.historyList.querySelectorAll(".history-record").forEach((button) => {
+    button.addEventListener("click", () => selectHistoryRecord(button.dataset.historyId));
+  });
+}
+
+function selectHistoryRecord(recordId) {
+  const record = state.historyRecords.find((item) => item.id === recordId);
+  if (!record) {
+    return;
+  }
+  stopPackingAnimation();
+  state.selectedHistoryId = record.id;
+  state.input = normalizeInput(structuredClone(record.input));
+  state.result = structuredClone(record.result);
+  state.selectedContainerId = null;
+  state.selectedInstanceId = null;
+  state.hoveredInstanceId = null;
+  state.focusedBoxId = null;
+  writeInputToForm(state.input);
+  clearError();
+  resetAnimationState({ showFull: true });
+  hideSceneTooltip();
+  renderContainerSelector(state.result);
+  renderResult(state.result);
+  renderHistoryRecords();
+  selectContainer(elements.containerSelector.value, { preserveSelection: false });
+}
+
+function historyRecordLabel(record) {
+  const created = new Date(record.createdAt);
+  const time = Number.isNaN(created.getTime()) ? "未知时间" : created.toLocaleString("zh-CN", { hour12: false });
+  const result = record.result ?? {};
+  const input = normalizeInput(record.input);
+  const containerCount = input.containers.reduce((total, container) => total + Number(container.quantity ?? 1), 0);
+  const boxCount = input.boxes.reduce((total, box) => total + Number(box.quantity ?? 0), 0);
+  return `
+    <span>${escapeHtml(time)}</span>
+    <strong>已装 ${result.loaded_count ?? 0} / 未装 ${result.unloaded_count ?? 0}</strong>
+    <small>${containerCount} ULD · ${boxCount} 箱 · 利用率 ${formatPercent(result.volume_utilization)}</small>
+  `;
 }
 
 function readInputFromForm() {
