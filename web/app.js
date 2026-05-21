@@ -82,6 +82,27 @@ const BOX_COLOR_PALETTE = [
   { r: 236, g: 72, b: 153 },
   { r: 59, g: 130, b: 246 },
 ];
+const EXCEL_COLOR_PALETTE = [
+  "FFE0F2FE",
+  "FFFEF3C7",
+  "FFF3E8FF",
+  "FFD1FAE5",
+  "FFFFE4E6",
+  "FFE0E7FF",
+  "FFCCFBF1",
+  "FFFFEDD5",
+  "FFFAE8FF",
+  "FFECFCCB",
+  "FFFCE7F3",
+  "FFDBEAFE",
+  "FFDCFCE7",
+  "FFFEF9C3",
+  "FFEDE9FE",
+  "FFE2E8F0",
+  "FFCFFAFE",
+  "FFFEE2E2",
+];
+const CRC32_TABLE = buildCrc32Table();
 
 const state = {
   input: structuredClone(fallbackInput),
@@ -162,6 +183,7 @@ function cacheElements() {
   elements.errorMessage = document.getElementById("errorMessage");
   elements.summaryCards = document.getElementById("summaryCards");
   elements.historyList = document.getElementById("historyList");
+  elements.exportExcelButton = document.getElementById("exportExcelButton");
   elements.loadedList = document.getElementById("loadedList");
   elements.unloadedList = document.getElementById("unloadedList");
   elements.activeContainerStats = document.getElementById("activeContainerStats");
@@ -180,6 +202,9 @@ function bindEvents() {
   elements.addBoxButton.addEventListener("click", () => addBoxRow());
   if (elements.importBoxesButton) {
     elements.importBoxesButton.addEventListener("click", importBulkBoxes);
+  }
+  if (elements.exportExcelButton) {
+    elements.exportExcelButton.addEventListener("click", exportExcel);
   }
   elements.calculateButton.addEventListener("click", () => calculatePacking());
   elements.containerSelector.addEventListener("change", () => selectContainer(elements.containerSelector.value));
@@ -370,6 +395,534 @@ function parseBulkBoxLine(rawLine, index) {
   };
 }
 
+function exportExcel() {
+  try {
+    clearError();
+    if (!state.result) {
+      throw new Error("请先计算装箱结果后再导出 Excel");
+    }
+    downloadExcelWorkbook(buildExcelWorkbook(state.result), buildExcelFileName(state.result, currentExportCreatedAt()));
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+function buildExcelWorkbook(result) {
+  return buildXlsxWorkbook(buildWorkbookSheets(result));
+}
+
+function buildExcelFileName(result, createdAt) {
+  return `${formatExportTimestamp(createdAt)}-装载率${formatExportUtilization(result?.volume_utilization)}.xlsx`;
+}
+
+function currentExportCreatedAt() {
+  const record = state.historyRecords.find((item) => item.id === state.selectedHistoryId);
+  return record?.createdAt ?? new Date().toISOString();
+}
+
+function formatExportTimestamp(value) {
+  const date = new Date(value);
+  const validDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const parts = [
+    validDate.getFullYear(),
+    String(validDate.getMonth() + 1).padStart(2, "0"),
+    String(validDate.getDate()).padStart(2, "0"),
+    String(validDate.getHours()).padStart(2, "0"),
+    String(validDate.getMinutes()).padStart(2, "0"),
+    String(validDate.getSeconds()).padStart(2, "0"),
+  ];
+  return `${parts[0]}${parts[1]}${parts[2]}-${parts[3]}${parts[4]}${parts[5]}`;
+}
+
+function formatExportUtilization(value) {
+  return `${(Number(value ?? 0) * 100).toFixed(2)}%`;
+}
+
+function buildWorkbookSheets(result) {
+  const containers = resultContainersForExport(result);
+  const placements = allPlacementsForExport(containers);
+  const loaded = result.loaded ?? loadedSummaryFromPlacements(placements);
+  const unloaded = result.unloaded ?? [];
+  const validationErrors = result.validation_errors?.length ? result.validation_errors.join("；") : "";
+
+  return [
+    {
+      name: "总体结果",
+      rows: [
+        ["指标", "数值"],
+        ["已装箱", result.loaded_count ?? 0],
+        ["未装箱", result.unloaded_count ?? 0],
+        ["体积利用率", formatPercent(result.volume_utilization)],
+        ["已用体积", result.used_volume ?? 0],
+        ["总体体积", result.container_volume ?? result.uld_volume ?? 0],
+        ["校验", result.validation_passed ? "通过" : "失败"],
+        ["校验信息", validationErrors],
+      ],
+      widths: [18, 28],
+    },
+    {
+      name: "ULD 明细",
+      rows: [
+        ["ULD", "类型", "已装箱", "未装箱", "体积利用率", "已用体积", "ULD 体积", "校验"],
+        ...containers.map((container) => {
+          const containerId = container.container_id ?? container.uld_id ?? "";
+          return [
+            { value: containerId, styleKey: uldStyleKey(containerId) },
+            container.container_type ?? container.uld_id ?? "",
+            container.loaded_count ?? 0,
+            container.unloaded_count ?? 0,
+            formatPercent(container.volume_utilization),
+            container.used_volume ?? 0,
+            container.uld_volume ?? 0,
+            container.validation_passed ? "通过" : "失败",
+          ];
+        }),
+      ],
+      widths: [18, 14, 12, 12, 14, 16, 16, 12],
+    },
+    {
+      name: "已装箱类型",
+      rows: [
+        ["箱子 ID", "数量"],
+        ...loaded.map((item) => [{ value: item.box_id, styleKey: boxStyleKey(item.box_id) }, item.quantity]),
+      ],
+      widths: [22, 12],
+    },
+    {
+      name: "未装箱",
+      rows: [
+        ["箱子 ID", "数量", "原因"],
+        ...unloaded.map((item) => [{ value: item.box_id, styleKey: boxStyleKey(item.box_id) }, item.quantity, item.reason ?? ""]),
+      ],
+      widths: [22, 12, 32],
+    },
+    {
+      name: "装箱坐标",
+      rows: [
+        ["ULD", "实例", "箱子 ID", "x", "y", "z", "L", "W", "H"],
+        ...placements.map((placement) => [
+          { value: placement.container_id, styleKey: uldStyleKey(placement.container_id) },
+          placement.instance_id,
+          { value: placement.box_id, styleKey: boxStyleKey(placement.box_id) },
+          placement.x,
+          placement.y,
+          placement.z,
+          placement.length,
+          placement.width,
+          placement.height,
+        ]),
+      ],
+      widths: [18, 20, 18, 10, 10, 10, 10, 10, 10],
+    },
+  ];
+}
+
+function buildXlsxWorkbook(sheets) {
+  const styleModel = buildExcelStyleModel(sheets);
+  const files = {
+    "[Content_Types].xml": buildContentTypesXml(sheets),
+    "_rels/.rels": buildRootRelsXml(),
+    "xl/workbook.xml": buildWorkbookXml(sheets),
+    "xl/_rels/workbook.xml.rels": buildWorkbookRelsXml(sheets),
+    "xl/styles.xml": buildStylesXml(styleModel),
+  };
+  sheets.forEach((sheet, index) => {
+    files[`xl/worksheets/sheet${index + 1}.xml`] = buildWorksheetXml(sheet, styleModel);
+  });
+  return createZipArchive(files);
+}
+
+function buildContentTypesXml(sheets) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  ${sheets
+    .map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+    .join("\n  ")}
+</Types>`;
+}
+
+function buildRootRelsXml() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`;
+}
+
+function buildWorkbookXml(sheets) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    ${sheets.map((sheet, index) => `<sheet name="${escapeXmlAttribute(sheet.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join("\n    ")}
+  </sheets>
+</workbook>`;
+}
+
+function buildWorkbookRelsXml(sheets) {
+  const worksheetRelationships = sheets
+    .map(
+      (_, index) =>
+        `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`,
+    )
+    .join("\n  ");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${worksheetRelationships}
+  <Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+}
+
+function buildExcelStyleModel(sheets) {
+  const styleKeys = [];
+  const seenStyleKeys = new Set();
+  sheets.forEach((sheet) => {
+    sheet.rows.forEach((row) => {
+      row.forEach((cell) => {
+        const styleKey = normalizeExcelCell(cell).styleKey;
+        if (styleKey && !seenStyleKeys.has(styleKey)) {
+          seenStyleKeys.add(styleKey);
+          styleKeys.push(styleKey);
+        }
+      });
+    });
+  });
+
+  const styleIndexByKey = new Map();
+  const styleEntries = styleKeys.map((key, index) => {
+    const entry = {
+      key,
+      color: excelColorForKey(key, index),
+      fillId: 4 + index,
+      styleIndex: 4 + index,
+    };
+    styleIndexByKey.set(key, entry.styleIndex);
+    return entry;
+  });
+
+  return { styleEntries, styleIndexByKey };
+}
+
+function uldStyleKey(id) {
+  const value = excelCellValue(id);
+  return value ? `uld:${value}` : "";
+}
+
+function boxStyleKey(id) {
+  const value = excelCellValue(id);
+  return value ? `box:${value}` : "";
+}
+
+function excelColorForKey(key, index = 0) {
+  if (index < EXCEL_COLOR_PALETTE.length) {
+    return EXCEL_COLOR_PALETTE[index];
+  }
+  let hash = 0;
+  for (const char of key) {
+    hash = (hash * 33 + char.charCodeAt(0)) % 360;
+  }
+  return hslToExcelColor((hash + index * 47) % 360, 58, 86);
+}
+
+function hslToExcelColor(hue, saturation, lightness) {
+  const s = saturation / 100;
+  const l = lightness / 100;
+  const chroma = (1 - Math.abs(2 * l - 1)) * s;
+  const x = chroma * (1 - Math.abs(((hue / 60) % 2) - 1));
+  const m = l - chroma / 2;
+  const [red, green, blue] =
+    hue < 60
+      ? [chroma, x, 0]
+      : hue < 120
+        ? [x, chroma, 0]
+        : hue < 180
+          ? [0, chroma, x]
+          : hue < 240
+            ? [0, x, chroma]
+            : hue < 300
+              ? [x, 0, chroma]
+              : [chroma, 0, x];
+  return `FF${excelColorChannel(red + m)}${excelColorChannel(green + m)}${excelColorChannel(blue + m)}`;
+}
+
+function excelColorChannel(value) {
+  return Math.round(value * 255)
+    .toString(16)
+    .padStart(2, "0")
+    .toUpperCase();
+}
+
+function buildStylesXml(styleModel) {
+  const styleEntries = styleModel?.styleEntries ?? [];
+  const dynamicFills = styleEntries
+    .map((entry) => `<fill><patternFill patternType="solid"><fgColor rgb="${entry.color}"/><bgColor indexed="64"/></patternFill></fill>`)
+    .join("\n    ");
+  const dynamicCellXfs = styleEntries
+    .map(
+      (entry) =>
+        `<xf numFmtId="0" fontId="2" fillId="${entry.fillId}" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>`,
+    )
+    .join("\n    ");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="3">
+    <font><sz val="11"/><color rgb="FF111827"/><name val="Microsoft YaHei"/></font>
+    <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Microsoft YaHei"/></font>
+    <font><b/><sz val="11"/><color rgb="FF0F172A"/><name val="Microsoft YaHei"/></font>
+  </fonts>
+  <fills count="${4 + styleEntries.length}">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF2563EB"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFE0F2FE"/><bgColor indexed="64"/></patternFill></fill>
+    ${dynamicFills}
+  </fills>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border>
+      <left style="thin"><color rgb="FF94A3B8"/></left>
+      <right style="thin"><color rgb="FF94A3B8"/></right>
+      <top style="thin"><color rgb="FF94A3B8"/></top>
+      <bottom style="thin"><color rgb="FF94A3B8"/></bottom>
+      <diagonal/>
+    </border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="${4 + styleEntries.length}">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="right"/></xf>
+    ${dynamicCellXfs}
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+}
+
+function buildWorksheetXml(sheet, styleModel) {
+  const columnCount = Math.max(...sheet.rows.map((row) => row.length), 1);
+  const range = `A1:${columnName(columnCount)}${Math.max(sheet.rows.length, 1)}`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetViews>
+    <sheetView workbookViewId="0">
+      ${freezePaneXml()}
+      <selection pane="bottomLeft"/>
+    </sheetView>
+  </sheetViews>
+  <sheetFormatPr defaultRowHeight="20"/>
+  <cols>
+    ${Array.from({ length: columnCount }, (_, index) => `<col min="${index + 1}" max="${index + 1}" width="${sheet.widths?.[index] ?? columnWidth(sheet.rows, index)}" customWidth="1"/>`).join("\n    ")}
+  </cols>
+  <sheetData>
+    ${sheet.rows.map((row, rowIndex) => worksheetRowXml(row, rowIndex, styleModel)).join("\n    ")}
+  </sheetData>
+  <autoFilter ref="${range}"/>
+</worksheet>`;
+}
+
+function worksheetRowXml(row, rowIndex, styleModel) {
+  const rowNumber = rowIndex + 1;
+  return `<row r="${rowNumber}" ht="${rowIndex === 0 ? 24 : 20}" customHeight="1">${row
+    .map((cell, columnIndex) => worksheetCellXml(cell, rowIndex, columnIndex, styleModel))
+    .join("")}</row>`;
+}
+
+function freezePaneXml() {
+  return `<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>`;
+}
+
+function worksheetCellXml(value, rowIndex, columnIndex, styleModel) {
+  const cell = normalizeExcelCell(value);
+  const rawValue = cell.value;
+  const reference = `${columnName(columnIndex + 1)}${rowIndex + 1}`;
+  const taggedStyle = cell.styleKey ? styleModel?.styleIndexByKey.get(cell.styleKey) : null;
+  const style = rowIndex === 0 ? 1 : taggedStyle ?? (columnIndex === 0 ? 2 : typeof rawValue === "number" ? 3 : 0);
+  if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+    return `<c r="${reference}" s="${style}"><v>${rawValue}</v></c>`;
+  }
+  return `<c r="${reference}" s="${style}" t="inlineStr"><is><t>${escapeXmlText(excelCellValue(rawValue))}</t></is></c>`;
+}
+
+function columnWidth(rows, columnIndex) {
+  const width = Math.max(...rows.map((row) => excelCellValue(row[columnIndex]).length), 8) + 4;
+  return Math.min(36, Math.max(10, width));
+}
+
+function columnName(columnIndex) {
+  let name = "";
+  let remaining = columnIndex;
+  while (remaining > 0) {
+    const modulo = (remaining - 1) % 26;
+    name = String.fromCharCode(65 + modulo) + name;
+    remaining = Math.floor((remaining - modulo) / 26);
+  }
+  return name;
+}
+
+function resultContainersForExport(result) {
+  if (Array.isArray(result.containers)) {
+    return result.containers;
+  }
+  return [
+    {
+      ...result,
+      container_id: result.uld_id ?? "ULD",
+      container_type: result.uld_id ?? "ULD",
+    },
+  ];
+}
+
+function allPlacementsForExport(containers) {
+  return containers.flatMap((container) =>
+    (container.placements ?? []).map((placement) => ({
+      ...placement,
+      container_id: container.container_id ?? container.uld_id ?? "",
+    })),
+  );
+}
+
+function excelCellValue(value) {
+  if (value && typeof value === "object" && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, "value")) {
+    return excelCellValue(value.value);
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return typeof value === "number" ? Number(value).toString() : String(value);
+}
+
+function normalizeExcelCell(value) {
+  if (value && typeof value === "object" && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, "value")) {
+    return {
+      value: value.value,
+      styleKey: value.styleKey ?? "",
+    };
+  }
+  return { value, styleKey: "" };
+}
+
+function downloadExcelWorkbook(content, fileName) {
+  const blob = new Blob([content], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function createZipArchive(files) {
+  const encoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+
+  Object.entries(files).forEach(([fileName, content]) => {
+    const nameBytes = encoder.encode(fileName);
+    const data = encoder.encode(content);
+    const checksum = crc32(data);
+    const localHeader = zipLocalHeader(nameBytes, data, checksum);
+    const centralHeader = zipCentralDirectoryHeader(nameBytes, data, checksum, offset);
+    localParts.push(localHeader, data);
+    centralParts.push(centralHeader);
+    offset += localHeader.length + data.length;
+  });
+
+  const centralDirectorySize = centralParts.reduce((total, part) => total + part.length, 0);
+  const endRecord = zipEndRecord(centralParts.length, centralDirectorySize, offset);
+  return concatUint8Arrays([...localParts, ...centralParts, endRecord]);
+}
+
+function zipLocalHeader(nameBytes, data, checksum) {
+  const header = new Uint8Array(30 + nameBytes.length);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x04034b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 0, true);
+  view.setUint16(8, 0, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, 0, true);
+  view.setUint32(14, checksum, true);
+  view.setUint32(18, data.length, true);
+  view.setUint32(22, data.length, true);
+  view.setUint16(26, nameBytes.length, true);
+  view.setUint16(28, 0, true);
+  header.set(nameBytes, 30);
+  return header;
+}
+
+function zipCentralDirectoryHeader(nameBytes, data, checksum, offset) {
+  const header = new Uint8Array(46 + nameBytes.length);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x02014b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 20, true);
+  view.setUint16(8, 0, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, 0, true);
+  view.setUint16(14, 0, true);
+  view.setUint32(16, checksum, true);
+  view.setUint32(20, data.length, true);
+  view.setUint32(24, data.length, true);
+  view.setUint16(28, nameBytes.length, true);
+  view.setUint16(30, 0, true);
+  view.setUint16(32, 0, true);
+  view.setUint16(34, 0, true);
+  view.setUint16(36, 0, true);
+  view.setUint32(38, 0, true);
+  view.setUint32(42, offset, true);
+  header.set(nameBytes, 46);
+  return header;
+}
+
+function zipEndRecord(entryCount, centralDirectorySize, centralDirectoryOffset) {
+  const record = new Uint8Array(22);
+  const view = new DataView(record.buffer);
+  view.setUint32(0, 0x06054b50, true);
+  view.setUint16(4, 0, true);
+  view.setUint16(6, 0, true);
+  view.setUint16(8, entryCount, true);
+  view.setUint16(10, entryCount, true);
+  view.setUint32(12, centralDirectorySize, true);
+  view.setUint32(16, centralDirectoryOffset, true);
+  view.setUint16(20, 0, true);
+  return record;
+}
+
+function concatUint8Arrays(parts) {
+  const totalLength = parts.reduce((total, part) => total + part.length, 0);
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+  parts.forEach((part) => {
+    output.set(part, offset);
+    offset += part.length;
+  });
+  return output;
+}
+
+function crc32(bytes) {
+  let checksum = 0xffffffff;
+  bytes.forEach((byte) => {
+    checksum = (checksum >>> 8) ^ CRC32_TABLE[(checksum ^ byte) & 0xff];
+  });
+  return (checksum ^ 0xffffffff) >>> 0;
+}
+
+function buildCrc32Table() {
+  return Array.from({ length: 256 }, (_, index) => {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    return value >>> 0;
+  });
+}
+
 function nextAlphabeticId(prefix, selector) {
   const usedIds = new Set([...document.querySelectorAll(selector)].map((input) => input.value.trim()));
   let index = 0;
@@ -514,13 +1067,16 @@ function historyRecordLabel(record) {
   const created = new Date(record.createdAt);
   const time = Number.isNaN(created.getTime()) ? "未知时间" : created.toLocaleString("zh-CN", { hour12: false });
   const result = record.result ?? {};
-  const input = normalizeInput(record.input);
-  const containerCount = input.containers.reduce((total, container) => total + Number(container.quantity ?? 1), 0);
-  const boxCount = input.boxes.reduce((total, box) => total + Number(box.quantity ?? 0), 0);
+  const loaded = result.loaded_count ?? 0;
+  const unloaded = result.unloaded_count ?? 0;
+  const util = formatPercent(result.volume_utilization);
   return `
-    <span>${escapeHtml(time)}</span>
-    <strong>已装 ${result.loaded_count ?? 0} / 未装 ${result.unloaded_count ?? 0}</strong>
-    <small>${containerCount} ULD · ${boxCount} 箱 · 利用率 ${formatPercent(result.volume_utilization)}</small>
+    <span class="history-time">${escapeHtml(time)}</span>
+    <span class="history-headline">
+      <span class="history-stat history-loaded"><em>已装</em><b>${loaded}</b></span>
+      <span class="history-stat history-unloaded"><em>未装</em><b>${unloaded}</b></span>
+    </span>
+    <span class="history-util">${util}</span>
   `;
 }
 
@@ -1828,4 +2384,15 @@ function escapeHtml(value) {
 
 function escapeAttribute(value) {
   return escapeHtml(value).replaceAll("'", "&#39;");
+}
+
+function escapeXmlText(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function escapeXmlAttribute(value) {
+  return escapeXmlText(value).replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 }

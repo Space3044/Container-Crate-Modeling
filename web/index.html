@@ -83,8 +83,8 @@
               <tbody id="boxTableBody"></tbody>
             </table>
           </div>
+          <p id="errorMessage" class="error-message" role="alert"></p>
         </div>
-        <p id="errorMessage" class="error-message" role="alert"></p>
       </section>
 
       <section class="panel result-overview" aria-labelledby="overview-title">
@@ -92,19 +92,12 @@
           <span class="panel-kicker">Result</span>
           <h2 id="overview-title">计算结果</h2>
           <p>总体装载情况与最近的计算记录。</p>
+          <button id="exportExcelButton" type="button" class="secondary-button small-button">导出 XLSX</button>
         </div>
         <div id="summaryCards" class="summary-grid"></div>
         <div class="result-section">
           <h3>最近10次计算记录</h3>
           <div id="historyList" class="history-list muted-text">暂无计算记录</div>
-        </div>
-        <div class="result-section">
-          <h3>已装箱类型</h3>
-          <div id="loadedList" class="result-list muted-text">暂无</div>
-        </div>
-        <div class="result-section">
-          <h3>未装箱</h3>
-          <div id="unloadedList" class="result-list muted-text">暂无</div>
         </div>
       </section>
 
@@ -172,6 +165,14 @@
             <select id="containerSelector"></select>
           </label>
           <div id="activeContainerStats" class="active-container-stats muted-text">选择 ULD 后显示单个 ULD 装载率。</div>
+        </div>
+        <div class="result-section">
+          <h3>已装箱类型</h3>
+          <div id="loadedList" class="result-list muted-text">暂无</div>
+        </div>
+        <div class="result-section">
+          <h3>未装箱</h3>
+          <div id="unloadedList" class="result-list muted-text">暂无</div>
         </div>
         <div class="result-section">
           <h3>当前选中箱子</h3>

@@ -19,6 +19,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "sliceValue",
             "loadedList",
             "historyList",
+            "exportExcelButton",
             "bulkBoxInput",
             "importBoxesButton",
             "activeContainerStats",
@@ -57,6 +58,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("倍速", html)
         self.assertIn("选择要查看的 ULD 实例", html)
         self.assertIn("单个 ULD 装载率", html)
+        self.assertIn("导出 XLSX", html)
         self.assertIn("悬停箱子信息", html)
         self.assertIn("<th>ID</th>", html)
         self.assertIn("<th>长宽互换</th>", html)
@@ -106,6 +108,20 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "importBulkBoxes",
             "parseBulkBoxLines",
             "parseBulkBoxLine",
+            "exportExcel",
+            "buildExcelWorkbook",
+            "buildExcelFileName",
+            "currentExportCreatedAt",
+            "formatExportTimestamp",
+            "formatExportUtilization",
+            "buildWorkbookSheets",
+            "buildXlsxWorkbook",
+            "buildExcelStyleModel",
+            "uldStyleKey",
+            "boxStyleKey",
+            "downloadExcelWorkbook",
+            "createZipArchive",
+            "crc32",
             "updateHoveredScenePlacement",
             "clearHoveredScenePlacement",
             "renderSceneTooltip",
@@ -162,6 +178,24 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("40.5*40.5*14*1", script)
         self.assertIn(r"line.split(/[\s*×xX]+/)", script)
         self.assertIn("quantity: readNonNegativeInteger(quantity", script)
+        self.assertIn("exportExcelButton.addEventListener", script)
+        self.assertIn("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", script)
+        self.assertIn("downloadExcelWorkbook(buildExcelWorkbook(state.result), buildExcelFileName(state.result, currentExportCreatedAt()))", script)
+        self.assertIn("装载率", script)
+        self.assertIn("selectedHistoryId", script)
+        self.assertIn(".xlsx", script)
+        self.assertIn("xl/styles.xml", script)
+        self.assertIn("const EXCEL_COLOR_PALETTE", script)
+        self.assertIn("styleKey: uldStyleKey", script)
+        self.assertIn("styleKey: boxStyleKey", script)
+        self.assertIn("buildStylesXml(styleModel)", script)
+        self.assertIn("buildWorksheetXml(sheet, styleModel)", script)
+        self.assertIn("excelColorForKey", script)
+        self.assertIn("<fonts count=", script)
+        self.assertIn("<fills count=", script)
+        self.assertIn("freezePane", script)
+        self.assertIn("<autoFilter", script)
+        self.assertIn("装箱坐标", script)
         self.assertIn("MAX_HISTORY_RECORDS = 10", script)
         self.assertIn("HISTORY_STORAGE_KEY", script)
         self.assertIn("localStorage", script)
