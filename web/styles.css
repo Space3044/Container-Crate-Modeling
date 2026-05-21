@@ -16,6 +16,11 @@
   --danger: #fca5a5;
   --success: #86efac;
   --shadow: 0 24px 70px rgba(2, 6, 23, 0.46);
+  --page-padding-x: clamp(18px, 2.4vw, 40px);
+  --workspace-gap: clamp(16px, 2vw, 28px);
+  --input-panel-height: clamp(560px, 68vh, 800px);
+  --scene-min-height: clamp(560px, 58vh, 760px);
+  --projection-height: clamp(132px, 14vh, 180px);
 }
 
 * {
@@ -126,7 +131,7 @@ select:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  padding: 24px clamp(22px, 3vw, 40px);
+  padding: 24px var(--page-padding-x);
   border-bottom: 1px solid rgba(148, 163, 184, 0.12);
   background: linear-gradient(180deg, rgba(7, 13, 28, 0.95), rgba(7, 13, 28, 0.7));
   box-shadow: 0 12px 40px rgba(2, 6, 23, 0.3);
@@ -179,15 +184,14 @@ select:focus-visible {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(370px, 0.95fr) minmax(640px, 1.9fr) minmax(350px, 0.92fr);
-  grid-template-columns: minmax(580px, 1.5fr) minmax(420px, 1.05fr) minmax(320px, 0.92fr);
+  grid-template-columns: minmax(460px, 1.1fr) minmax(540px, 1.35fr) minmax(320px, 0.85fr);
   grid-template-rows: auto auto;
   grid-template-areas:
     "uld boxes overview"
     "viewer viewer details";
   align-items: stretch;
-  gap: clamp(20px, 2.4vw, 28px);
-  padding: 28px clamp(22px, 3vw, 40px) 40px;
+  gap: var(--workspace-gap);
+  padding: 28px var(--page-padding-x) 40px;
 }
 
 .uld-panel { grid-area: uld; }
@@ -207,7 +211,7 @@ select:focus-visible {
   display: grid;
   gap: 14px;
   min-height: 0;
-  height: clamp(640px, 78vh, 820px);
+  height: var(--input-panel-height);
 }
 
 .uld-panel { grid-template-rows: auto 1fr; }
@@ -338,8 +342,8 @@ select:focus-visible {
 
 .viewer-panel {
   display: grid;
-  grid-template-rows: auto minmax(640px, 1fr) auto auto;
-  min-height: 980px;
+  grid-template-rows: auto minmax(var(--scene-min-height), 1fr) auto auto;
+  min-height: calc(var(--scene-min-height) + 330px);
   overflow: hidden;
   border: 1px solid var(--border);
   background:
@@ -769,12 +773,12 @@ tbody tr:last-child td {
 .scene-stage {
   position: relative;
   height: 100%;
-  min-height: 640px;
+  min-height: var(--scene-min-height);
 }
 
 #sceneCanvas {
   height: 100%;
-  min-height: 640px;
+  min-height: var(--scene-min-height);
   background: linear-gradient(160deg, #040813 0%, #071426 52%, #01040a 100%);
   box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.68);
   cursor: grab;
@@ -809,7 +813,7 @@ tbody tr:last-child td {
 }
 
 .projection-card canvas {
-  height: 160px;
+  height: var(--projection-height);
   cursor: crosshair;
 }
 
@@ -1162,38 +1166,106 @@ input[type="range"] {
   }
 }
 
-@media (max-width: 1440px) {
+@media (min-width: 2200px) {
+  :root {
+    --input-panel-height: clamp(620px, 62vh, 900px);
+    --scene-min-height: clamp(680px, 58vh, 920px);
+    --projection-height: clamp(160px, 12vh, 220px);
+  }
+
   .workspace {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(520px, 1.05fr) minmax(680px, 1.5fr) minmax(380px, 0.8fr);
+  }
+}
+
+@media (max-width: 1599px) {
+  :root {
+    --input-panel-height: clamp(460px, 58vh, 620px);
+    --scene-min-height: clamp(500px, 58vh, 680px);
+    --projection-height: clamp(128px, 13vh, 160px);
+  }
+
+  .workspace {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-rows: auto;
     grid-template-areas:
-      "uld"
-      "boxes"
-      "overview"
-      "viewer"
-      "details";
+      "uld boxes"
+      "viewer viewer"
+      "overview details";
+  }
+
+  .result-overview {
+    height: auto;
+    overflow: visible;
   }
 
   .result-details {
     position: static;
     max-height: none;
+    overflow: visible;
   }
 
   .viewer-panel {
-    min-height: 820px;
+    min-height: calc(var(--scene-min-height) + 310px);
+  }
+}
+
+@media (max-width: 1100px) {
+  :root {
+    --input-panel-height: clamp(420px, 52vh, 580px);
+    --scene-min-height: clamp(440px, 56vh, 620px);
   }
 
-  .scene-stage,
-  #sceneCanvas {
-    min-height: 580px;
+  .workspace {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "uld"
+      "boxes"
+      "viewer"
+      "overview"
+      "details";
   }
 
-  .projection-grid {
+  .result-overview,
+  .result-details {
+    height: auto;
+    overflow: visible;
+  }
+
+  .uld-panel .table-scroll,
+  .boxes-panel .table-scroll {
+    overflow-x: auto;
+  }
+
+  .container-table {
+    min-width: 760px;
+  }
+
+  .box-table {
+    min-width: 820px;
+  }
+}
+
+@media (max-width: 900px) {
+  :root {
+    --scene-min-height: clamp(380px, 54vh, 540px);
+    --projection-height: 150px;
+  }
+
+  .projection-grid,
+  .summary-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 700px) {
+  :root {
+    --page-padding-x: 14px;
+    --workspace-gap: 14px;
+    --input-panel-height: clamp(380px, 58vh, 520px);
+    --scene-min-height: clamp(320px, 50vh, 460px);
+  }
+
   .app-header,
   .header-actions {
     align-items: stretch;
@@ -1218,9 +1290,17 @@ input[type="range"] {
     padding-left: 0;
   }
 
-  .field-grid,
-  .summary-grid {
+  .field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .section-card,
+  .result-section {
+    padding: 14px;
+  }
+
+  button {
+    min-height: 44px;
   }
 }
 
