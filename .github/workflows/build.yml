@@ -1,0 +1,74 @@
+name: Build Desktop Apps
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows exe
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install build tools
+        run: python -m pip install -U pip pyinstaller
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build exe
+        run: >
+          python -m PyInstaller
+          --name UldPacking
+          --onefile
+          --add-data "web;web"
+          --add-data "data;data"
+          launcher.py
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UldPacking-windows
+          path: dist/UldPacking.exe
+
+  build-mac:
+    name: Build macOS app
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install build tools
+        run: python -m pip install -U pip pyinstaller
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build app
+        run: >
+          python -m PyInstaller
+          --name UldPacking
+          --windowed
+          --add-data "web:web"
+          --add-data "data:data"
+          launcher.py
+
+      - name: Zip macOS app
+        run: ditto -c -k --sequesterRsrc --keepParent dist/UldPacking.app dist/UldPacking-mac.zip
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UldPacking-mac
+          path: dist/UldPacking-mac.zip

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -88,10 +89,18 @@ def create_handler(
     return ProfilePackingRequestHandler
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8000, static_dir: str | Path = DEFAULT_STATIC_DIR) -> None:
+def run_server(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    static_dir: str | Path = DEFAULT_STATIC_DIR,
+    on_started: Callable[[str, int], None] | None = None,
+) -> None:
     handler = create_handler(static_dir=static_dir)
     with ThreadingHTTPServer((host, port), handler) as server:
-        print(f"ULD packing visualizer running at http://{host}:{port}/")
+        actual_host, actual_port = server.server_address[:2]
+        print(f"ULD packing visualizer running at http://{actual_host}:{actual_port}/")
+        if on_started:
+            on_started(str(actual_host), int(actual_port))
         server.serve_forever()
 
 
