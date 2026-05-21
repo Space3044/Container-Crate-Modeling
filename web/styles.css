@@ -569,7 +569,8 @@ textarea {
   overflow-x: auto;
   border: 0;
   background: transparent;
-  scrollbar-color: rgba(56, 189, 248, 0.34) rgba(15, 23, 42, 0.42);
+  scrollbar-color: rgba(148, 163, 184, 0.28) transparent;
+  scrollbar-width: thin;
 }
 
 table {
