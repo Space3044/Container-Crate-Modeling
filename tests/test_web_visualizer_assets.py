@@ -245,9 +245,12 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn(".history-record", css)
         self.assertIn(".bulk-box-import", css)
         self.assertIn(".bulk-box-import textarea", css)
-        self.assertIn("--input-panel-height: clamp(560px, 68vh, 800px)", css)
+        self.assertIn("--result-panel-height: calc(var(--history-list-height) + 360px)", css)
+        self.assertIn("--input-panel-height: var(--result-panel-height)", css)
+        self.assertIn("--history-list-height: 592px", css)
         self.assertIn("--scene-min-height: clamp(560px, 58vh, 760px)", css)
-        self.assertIn("minmax(460px, 1.1fr) minmax(540px, 1.35fr) minmax(320px, 0.85fr)", css)
+        self.assertIn("minmax(520px, 1.3fr) minmax(480px, 1.15fr) minmax(320px, 0.85fr)", css)
+        self.assertIn("minmax(620px, 1.15fr) minmax(580px, 1.4fr) minmax(380px, 0.8fr)", css)
         self.assertIn("grid-template-rows: auto minmax(var(--scene-min-height), 1fr) auto auto", css)
         self.assertIn("height: var(--projection-height)", css)
         self.assertIn("@media (min-width: 2200px)", css)
@@ -257,6 +260,18 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("@media (max-width: 1100px)", css)
         self.assertIn("@media (max-width: 900px)", css)
         self.assertIn("overflow-x: auto", css)
+        self.assertIn("height: var(--result-panel-height)", css)
+        self.assertIn("height: var(--history-list-height)", css)
+        self.assertIn("max-height: var(--history-list-height)", css)
+        self.assertIn("height: var(--history-record-height)", css)
+        self.assertIn(".uld-panel .table-scroll,\n.boxes-panel .table-scroll {\n  overflow-x: hidden;", css)
+        self.assertIn(".box-table th:nth-child(n+5),\n.box-table td:nth-child(n+5)", css)
+        self.assertIn(".box-table td:nth-child(5) input", css)
+        self.assertIn("max-width: 76px", css)
+        self.assertIn(".box-table .icon-button", css)
+        self.assertNotIn("--input-panel-height: clamp(", css)
+        self.assertNotIn(".result-overview {\n    height: auto;", css)
+        self.assertNotIn(".result-overview,\n  .result-details {\n    height: auto;", css)
         self.assertIn("max-height: calc(100vh - 112px)", css)
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         self.assertIn("position: sticky", css)
@@ -269,7 +284,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         script = Path("web/app.js").read_text(encoding="utf-8")
         sample = json.loads(Path("data/profile_packing_input.json").read_text(encoding="utf-8"))
         expected_containers = [
-            ("Q7", 306, [[0, 0], [240, 0], [240, 240], [120, 240], [0, 290]]),
+            ("Q7", 306, [[0, 0], [240, 0], [240, 240], [120, 290], [0, 290]]),
             ("Q6", 306, [[0, 0], [240, 0], [240, 240], [0, 240]]),
             ("L", 346, [[0, 0], [240, 0], [240, 160], [0, 160]]),
             ("PGA", 600, [[0, 0], [240, 0], [240, 190], [120, 290], [0, 290]]),

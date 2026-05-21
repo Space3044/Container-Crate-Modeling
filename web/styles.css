@@ -18,7 +18,11 @@
   --shadow: 0 24px 70px rgba(2, 6, 23, 0.46);
   --page-padding-x: clamp(18px, 2.4vw, 40px);
   --workspace-gap: clamp(16px, 2vw, 28px);
-  --input-panel-height: clamp(560px, 68vh, 800px);
+  --history-record-height: 112px;
+  --history-record-gap: 8px;
+  --history-list-height: 592px;
+  --result-panel-height: calc(var(--history-list-height) + 360px);
+  --input-panel-height: var(--result-panel-height);
   --scene-min-height: clamp(560px, 58vh, 760px);
   --projection-height: clamp(132px, 14vh, 180px);
 }
@@ -184,7 +188,7 @@ select:focus-visible {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(460px, 1.1fr) minmax(540px, 1.35fr) minmax(320px, 0.85fr);
+  grid-template-columns: minmax(520px, 1.3fr) minmax(480px, 1.15fr) minmax(320px, 0.85fr);
   grid-template-rows: auto auto;
   grid-template-areas:
     "uld boxes overview"
@@ -206,8 +210,7 @@ select:focus-visible {
 }
 
 .uld-panel,
-.boxes-panel,
-.result-overview {
+.boxes-panel {
   display: grid;
   gap: 14px;
   min-height: 0;
@@ -217,8 +220,12 @@ select:focus-visible {
 .uld-panel { grid-template-rows: auto 1fr; }
 .boxes-panel { grid-template-rows: auto 1fr; }
 .result-overview {
-  align-content: start;
-  overflow-y: auto;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 14px;
+  min-height: 0;
+  height: var(--result-panel-height);
+  overflow: hidden;
 }
 
 .uld-panel > .section-card,
@@ -323,6 +330,11 @@ select:focus-visible {
     linear-gradient(180deg, rgba(15, 23, 42, 0.55), rgba(2, 6, 23, 0.32)),
     var(--block);
   box-shadow: 0 8px 22px rgba(2, 6, 23, 0.18);
+}
+
+.result-overview .result-section {
+  min-height: 0;
+  align-content: start;
 }
 
 .result-section h3 {
@@ -629,7 +641,7 @@ tbody tr:last-child td {
 }
 
 .box-table th:nth-child(1),
-.box-table td:nth-child(1) { width: 14%; }
+.box-table td:nth-child(1) { width: 15%; }
 .box-table th:nth-child(2),
 .box-table td:nth-child(2) { width: 14%; }
 .box-table th:nth-child(3),
@@ -637,16 +649,22 @@ tbody tr:last-child td {
 .box-table th:nth-child(4),
 .box-table td:nth-child(4) { width: 14%; }
 .box-table th:nth-child(5),
-.box-table td:nth-child(5) { width: 14%; }
+.box-table td:nth-child(5) { width: 13%; }
 .box-table th:nth-child(6),
 .box-table td:nth-child(6) {
-  width: 18%;
+  width: 20%;
   text-align: center;
 }
 .box-table th:nth-child(7),
 .box-table td:nth-child(7) {
-  width: 12%;
+  width: 10%;
   text-align: center;
+}
+
+.box-table th:nth-child(n+5),
+.box-table td:nth-child(n+5) {
+  padding-right: 6px;
+  padding-left: 6px;
 }
 
 .box-table input {
@@ -660,6 +678,11 @@ tbody tr:last-child td {
 .box-table td:nth-child(1) input {
   text-align: left;
   padding: 0 8px;
+}
+
+.box-table td:nth-child(5) input {
+  max-width: 76px;
+  margin: 0 auto;
 }
 
 .box-table input[type="number"]::-webkit-outer-spin-button,
@@ -720,6 +743,7 @@ tbody tr:last-child td {
   width: 20px;
   min-width: 20px;
   height: 20px;
+  margin: 0 auto;
   accent-color: var(--accent);
 }
 
@@ -730,6 +754,10 @@ tbody tr:last-child td {
   border: 1px solid rgba(252, 165, 165, 0.32);
   color: var(--danger);
   background: rgba(127, 29, 29, 0.18);
+}
+
+.box-table .icon-button {
+  margin: 0 auto;
 }
 
 .icon-button:hover {
@@ -950,9 +978,11 @@ input[type="range"] {
 
 .history-list {
   display: grid;
-  gap: 8px;
+  gap: var(--history-record-gap);
+  align-content: start;
   min-height: 48px;
-  max-height: 500px;
+  height: var(--history-list-height);
+  max-height: var(--history-list-height);
   overflow-y: auto;
   padding-right: 4px;
 }
@@ -961,8 +991,8 @@ input[type="range"] {
   position: relative;
   display: block;
   width: 100%;
-  height: auto;
-  min-height: 112px;
+  height: var(--history-record-height);
+  min-height: var(--history-record-height);
   padding: 14px 18px;
   border: 1px solid var(--border-soft);
   color: var(--text);
@@ -1168,19 +1198,17 @@ input[type="range"] {
 
 @media (min-width: 2200px) {
   :root {
-    --input-panel-height: clamp(620px, 62vh, 900px);
     --scene-min-height: clamp(680px, 58vh, 920px);
     --projection-height: clamp(160px, 12vh, 220px);
   }
 
   .workspace {
-    grid-template-columns: minmax(520px, 1.05fr) minmax(680px, 1.5fr) minmax(380px, 0.8fr);
+    grid-template-columns: minmax(620px, 1.15fr) minmax(580px, 1.4fr) minmax(380px, 0.8fr);
   }
 }
 
 @media (max-width: 1599px) {
   :root {
-    --input-panel-height: clamp(460px, 58vh, 620px);
     --scene-min-height: clamp(500px, 58vh, 680px);
     --projection-height: clamp(128px, 13vh, 160px);
   }
@@ -1192,11 +1220,6 @@ input[type="range"] {
       "uld boxes"
       "viewer viewer"
       "overview details";
-  }
-
-  .result-overview {
-    height: auto;
-    overflow: visible;
   }
 
   .result-details {
@@ -1212,7 +1235,6 @@ input[type="range"] {
 
 @media (max-width: 1100px) {
   :root {
-    --input-panel-height: clamp(420px, 52vh, 580px);
     --scene-min-height: clamp(440px, 56vh, 620px);
   }
 
@@ -1226,7 +1248,6 @@ input[type="range"] {
       "details";
   }
 
-  .result-overview,
   .result-details {
     height: auto;
     overflow: visible;
@@ -1248,6 +1269,7 @@ input[type="range"] {
 
 @media (max-width: 900px) {
   :root {
+    --result-panel-height: calc(var(--history-list-height) + 520px);
     --scene-min-height: clamp(380px, 54vh, 540px);
     --projection-height: 150px;
   }
@@ -1262,7 +1284,6 @@ input[type="range"] {
   :root {
     --page-padding-x: 14px;
     --workspace-gap: 14px;
-    --input-panel-height: clamp(380px, 58vh, 520px);
     --scene-min-height: clamp(320px, 50vh, 460px);
   }
 
