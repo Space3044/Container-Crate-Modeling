@@ -64,6 +64,7 @@ const fallbackInput = {
 };
 
 const AXIS_EXTENSION_FACTOR = 1.18;
+const SCENE_SAFE_PADDING = 72;
 const BOX_ANIMATION_INTERVAL_MS = 320;
 const MAX_HISTORY_RECORDS = 10;
 const HISTORY_STORAGE_KEY = "uld-packing-history";
@@ -1497,8 +1498,8 @@ function drawScene() {
 
   const activeResult = getActiveResult();
   const dimensions = getSceneDimensions(activeInput);
-  const scale = getSceneScale(rect, dimensions);
-  const projector = (point) => projectPoint(point, dimensions, scale, rect);
+  const viewport = getSceneViewport(rect, dimensions);
+  const projector = (point) => projectPoint(point, dimensions, viewport, rect);
   drawFloorGrid(context, projector, dimensions);
   drawPrism(context, activeInput, projector);
 
@@ -1705,11 +1706,75 @@ function getSceneDimensions(input) {
 }
 
 function getSceneScale(rect, dimensions) {
-  const maxDimension = Math.max(dimensions.length, dimensions.maxY, dimensions.maxZ);
-  return (Math.min(rect.width, rect.height) * 0.72 * state.camera.zoom) / maxDimension;
+  return getSceneViewport(rect, dimensions).scale;
 }
 
-function projectPoint(point, dimensions, scale, rect) {
+function getSceneViewport(rect, dimensions) {
+  const bounds = sceneViewportBounds(dimensions);
+  const usableWidth = Math.max(1, rect.width - SCENE_SAFE_PADDING * 2);
+  const usableHeight = Math.max(1, rect.height - SCENE_SAFE_PADDING * 2);
+  const scale =
+    Math.min(usableWidth / Math.max(bounds.width, 1), usableHeight / Math.max(bounds.height, 1)) * state.camera.zoom;
+  return {
+    scale,
+    offsetX: rect.width / 2 + state.camera.panX - ((bounds.minX + bounds.maxX) / 2) * scale,
+    offsetY: rect.height / 2 + state.camera.panY - ((bounds.minY + bounds.maxY) / 2) * scale,
+  };
+}
+
+function sceneViewportBounds(dimensions) {
+  const projected = sceneEnvelopePoints(dimensions).map((point) => projectScenePoint(point, dimensions));
+  const xs = projected.map((point) => point.x);
+  const ys = projected.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
+function sceneEnvelopePoints(dimensions) {
+  const length = dimensions.length;
+  const maxY = dimensions.maxY;
+  const maxZ = dimensions.maxZ;
+  const xAxisEnd = dimensions.length * AXIS_EXTENSION_FACTOR;
+  const yAxisEnd = dimensions.maxY * AXIS_EXTENSION_FACTOR;
+  const zAxisEnd = dimensions.maxZ * AXIS_EXTENSION_FACTOR;
+  return [
+    { x: 0, y: 0, z: 0 },
+    { x: length, y: 0, z: 0 },
+    { x: length, y: maxY, z: 0 },
+    { x: 0, y: maxY, z: 0 },
+    { x: 0, y: 0, z: maxZ },
+    { x: length, y: 0, z: maxZ },
+    { x: length, y: maxY, z: maxZ },
+    { x: 0, y: maxY, z: maxZ },
+    { x: xAxisEnd, y: 0, z: 0 },
+    { x: 0, y: yAxisEnd, z: 0 },
+    { x: 0, y: 0, z: zAxisEnd },
+  ];
+}
+
+function projectPoint(point, dimensions, viewport, rect) {
+  const projected = projectScenePoint(point, dimensions);
+  const scale = typeof viewport === "number" ? viewport : viewport.scale;
+  const offsetX = typeof viewport === "number" ? rect.width / 2 + state.camera.panX : viewport.offsetX;
+  const offsetY = typeof viewport === "number" ? rect.height / 2 + state.camera.panY : viewport.offsetY;
+  return {
+    x: offsetX + projected.x * scale,
+    y: offsetY + projected.y * scale,
+    depth: projected.depth,
+  };
+}
+
+function projectScenePoint(point, dimensions) {
   const centered = {
     x: point.x - dimensions.length / 2,
     y: point.y - dimensions.maxY / 2,
@@ -1727,8 +1792,8 @@ function projectPoint(point, dimensions, scale, rect) {
   const z2 = y1 * pitchSin + z1 * pitchCos;
 
   return {
-    x: rect.width / 2 + state.camera.panX + x1 * scale,
-    y: rect.height / 2 + state.camera.panY - z2 * scale,
+    x: x1,
+    y: -z2,
     depth: y2,
   };
 }

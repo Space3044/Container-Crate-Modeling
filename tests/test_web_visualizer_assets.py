@@ -131,6 +131,10 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "drawFloorGrid",
             "drawBoxWireframes",
             "drawBoxWireframe",
+            "getSceneViewport",
+            "sceneViewportBounds",
+            "sceneEnvelopePoints",
+            "projectScenePoint",
             "currentAnimatedInstanceId",
             "setSceneBoxFocus",
             "clearSceneBoxFocus",
@@ -166,6 +170,10 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("boxFaceStyle(color, selected, hovered, alpha)", script)
         self.assertIn("drawFloorGrid(context, projector, dimensions)", script)
         self.assertIn("drawBoxWireframes(context, visiblePlacements, projector, latestAnimatedId)", script)
+        self.assertIn("SCENE_SAFE_PADDING", script)
+        self.assertIn("const viewport = getSceneViewport(rect, dimensions)", script)
+        self.assertIn("projectPoint(point, dimensions, viewport, rect)", script)
+        self.assertIn("dimensions.length * AXIS_EXTENSION_FACTOR", script)
         self.assertIn("currentAnimatedInstanceId(visiblePlacements)", script)
         self.assertIn("const BOX_COLOR_PALETTE", script)
         self.assertIn("function colorForBox(id)", script)
@@ -231,9 +239,9 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn(".bulk-box-import", css)
         self.assertIn(".bulk-box-import textarea", css)
         self.assertIn("minmax(370px, 0.95fr) minmax(640px, 1.9fr) minmax(350px, 0.92fr)", css)
-        self.assertIn("grid-template-rows: auto minmax(560px, 1fr) auto auto", css)
-        self.assertIn("min-height: 900px", css)
-        self.assertIn("min-height: 560px", css)
+        self.assertIn("grid-template-rows: auto minmax(640px, 1fr) auto auto", css)
+        self.assertIn("min-height: 980px", css)
+        self.assertIn("min-height: 640px", css)
         self.assertIn("height: 160px", css)
         self.assertIn("max-height: calc(100vh - 112px)", css)
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)
