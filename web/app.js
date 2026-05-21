@@ -152,7 +152,7 @@ document.addEventListener("DOMContentLoaded", init);
 async function init() {
   cacheElements();
   bindEvents();
-  state.historyRecords = loadHistoryRecords();
+  state.historyRecords = await loadPersistedHistoryRecords();
   renderHistoryRecords();
   await loadSample();
   await calculatePacking({ recordHistory: false });
@@ -963,7 +963,7 @@ async function calculatePacking(options = {}) {
     state.input = input;
     state.result = data.result;
     if (options.recordHistory !== false) {
-      addHistoryRecord(input, data.result);
+      await addHistoryRecord(input, data.result);
     }
     state.selectedContainerId = null;
     state.selectedInstanceId = null;
@@ -984,26 +984,65 @@ async function calculatePacking(options = {}) {
 function loadHistoryRecords() {
   try {
     const records = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) || "[]");
-    if (!Array.isArray(records)) {
-      return [];
-    }
-    return records
-      .filter((record) => record?.id && record?.input && record?.result)
-      .slice(0, MAX_HISTORY_RECORDS);
+    return normalizeHistoryRecords(records);
   } catch {
     return [];
   }
 }
 
-function saveHistoryRecords() {
+async function loadPersistedHistoryRecords() {
+  const localRecords = loadHistoryRecords();
   try {
-    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(state.historyRecords.slice(0, MAX_HISTORY_RECORDS)));
+    const response = await fetch("/api/history");
+    if (!response.ok) {
+      return localRecords;
+    }
+    const data = await readJsonResponse(response);
+    const serverRecords = normalizeHistoryRecords(data.records);
+    if (serverRecords.length > 0) {
+      saveHistoryRecords(serverRecords);
+      return serverRecords;
+    }
+    if (localRecords.length > 0) {
+      await savePersistedHistoryRecords(localRecords);
+    }
+  } catch {
+    return localRecords;
+  }
+  return localRecords;
+}
+
+function saveHistoryRecords(records = state.historyRecords) {
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(normalizeHistoryRecords(records)));
   } catch {
     // Ignore storage failures. The current calculation result is still usable.
   }
 }
 
-function addHistoryRecord(input, result) {
+async function savePersistedHistoryRecords(records = state.historyRecords) {
+  saveHistoryRecords(records);
+  try {
+    await fetch("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ records: normalizeHistoryRecords(records) }),
+    });
+  } catch {
+    // Browser localStorage remains the fallback when the page is not served by the bundled app.
+  }
+}
+
+function normalizeHistoryRecords(records) {
+  if (!Array.isArray(records)) {
+    return [];
+  }
+  return records
+    .filter((record) => record?.id && record?.input && record?.result)
+    .slice(0, MAX_HISTORY_RECORDS);
+}
+
+async function addHistoryRecord(input, result) {
   const record = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     createdAt: new Date().toISOString(),
@@ -1012,7 +1051,7 @@ function addHistoryRecord(input, result) {
   };
   state.historyRecords = [record, ...state.historyRecords].slice(0, MAX_HISTORY_RECORDS);
   state.selectedHistoryId = record.id;
-  saveHistoryRecords();
+  await savePersistedHistoryRecords();
   renderHistoryRecords();
 }
 

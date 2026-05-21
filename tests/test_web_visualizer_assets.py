@@ -99,7 +99,9 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "renderActiveContainerDetails",
             "renderActiveContainerStats",
             "renderUnloadedList",
+            "loadPersistedHistoryRecords",
             "loadHistoryRecords",
+            "savePersistedHistoryRecords",
             "saveHistoryRecords",
             "addHistoryRecord",
             "renderHistoryRecords",
@@ -206,6 +208,11 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("装箱坐标", script)
         self.assertIn("MAX_HISTORY_RECORDS = 10", script)
         self.assertIn("HISTORY_STORAGE_KEY", script)
+        self.assertIn('fetch("/api/history")', script)
+        self.assertIn('fetch("/api/history", {', script)
+        self.assertIn("await loadPersistedHistoryRecords()", script)
+        self.assertIn("await addHistoryRecord(input, data.result)", script)
+        self.assertIn("async function addHistoryRecord", script)
         self.assertIn("localStorage", script)
         self.assertIn("state.historyRecords", script)
         self.assertIn('selectPlacement(row.dataset.instanceId, { syncSlice: true, focusSameBoxType: true })', script)

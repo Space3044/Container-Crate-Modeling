@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,14 +17,17 @@ from cargo_loading.profile_solver import packing_input_from_dict, packing_result
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_STATIC_DIR = PROJECT_ROOT / "web"
 DEFAULT_SAMPLE_PATH = PROJECT_ROOT / "data" / "profile_packing_input.json"
+MAX_HISTORY_RECORDS = 10
 
 
 def create_handler(
     static_dir: str | Path = DEFAULT_STATIC_DIR,
     sample_path: str | Path = DEFAULT_SAMPLE_PATH,
+    history_path: str | Path | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     static_root = Path(static_dir).resolve()
     sample_file = Path(sample_path).resolve()
+    history_file = Path(history_path or default_history_path()).expanduser()
 
     class ProfilePackingRequestHandler(BaseHTTPRequestHandler):
         server_version = "ProfilePackingHTTP/0.1"
@@ -34,12 +39,29 @@ def create_handler(
             if self.path == "/api/sample":
                 self._send_json(json.loads(sample_file.read_text(encoding="utf-8")))
                 return
+            if self.path == "/api/history":
+                self._send_json({"records": read_history_records(history_file)})
+                return
             if self.path.startswith("/api/"):
                 self._send_json({"error": "unknown api route"}, status=HTTPStatus.NOT_FOUND)
                 return
             self._send_static_file(static_root / self.path.lstrip("/"))
 
         def do_POST(self) -> None:
+            if self.path == "/api/history":
+                try:
+                    payload = self._read_json_body()
+                    records = payload.get("records")
+                    if not isinstance(records, list):
+                        raise ValueError("history records must be an array")
+                    saved_records = write_history_records(history_file, records)
+                except Exception as error:
+                    self._send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+
+                self._send_json({"records": saved_records})
+                return
+
             if self.path != "/api/pack":
                 self._send_json({"error": "unknown api route"}, status=HTTPStatus.NOT_FOUND)
                 return
@@ -87,6 +109,50 @@ def create_handler(
             self.wfile.write(body)
 
     return ProfilePackingRequestHandler
+
+
+def default_history_path() -> Path:
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base / "UldPacking" / "history.json"
+
+
+DEFAULT_HISTORY_PATH = default_history_path()
+
+
+def read_history_records(history_path: str | Path = DEFAULT_HISTORY_PATH) -> list[dict[str, Any]]:
+    path = Path(history_path)
+    try:
+        records = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+    return normalize_history_records(records)
+
+
+def write_history_records(history_path: str | Path, records: list[Any]) -> list[dict[str, Any]]:
+    normalized_records = normalize_history_records(records)
+    path = Path(history_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(normalized_records, ensure_ascii=False, indent=2), encoding="utf-8")
+    return normalized_records
+
+
+def normalize_history_records(records: Any) -> list[dict[str, Any]]:
+    if not isinstance(records, list):
+        return []
+    normalized = [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and record.get("id")
+        and record.get("input") is not None
+        and record.get("result") is not None
+    ]
+    return normalized[:MAX_HISTORY_RECORDS]
 
 
 def run_server(

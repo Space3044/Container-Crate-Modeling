@@ -1,5 +1,6 @@
 import json
 import threading
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
@@ -73,14 +74,43 @@ class WebServerTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    def _start_server(self):
+    def test_history_records_persist_through_server_restart(self):
+        record = {
+            "id": "history-001",
+            "createdAt": "2026-05-21T10:00:00.000Z",
+            "input": {"containers": [], "boxes": []},
+            "result": {"loaded_count": 1, "unloaded_count": 0, "volume_utilization": 0.5},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            history_path = Path(directory) / "history.json"
+            server = self._start_server(history_path=history_path)
+            try:
+                saved = self._post_json(server, "/api/history", {"records": [record]})
+                self.assertEqual(saved["records"], [record])
+            finally:
+                server.shutdown()
+                server.server_close()
+
+            restarted_server = self._start_server(history_path=history_path)
+            try:
+                loaded = self._get_json(restarted_server, "/api/history")
+                self.assertEqual(loaded["records"], [record])
+            finally:
+                restarted_server.shutdown()
+                restarted_server.server_close()
+
+    def _start_server(self, history_path: Path | None = None):
         from http.server import ThreadingHTTPServer
 
-        handler = create_handler(static_dir=Path("web"))
+        handler = create_handler(static_dir=Path("web"), history_path=history_path)
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return server
+
+    def _get_json(self, server, path: str):
+        with urllib.request.urlopen(f"{self._base_url(server)}{path}", timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
 
     def _post_json(self, server, path: str, payload: dict):
         request = urllib.request.Request(
