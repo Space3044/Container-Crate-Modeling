@@ -1,5 +1,6 @@
 import unittest
 import json
+import subprocess
 from pathlib import Path
 
 
@@ -186,7 +187,8 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("bulkBoxInput", script)
         self.assertIn("140*105*94*20", script)
         self.assertIn("40.5*40.5*14*1", script)
-        self.assertIn(r"line.split(/[\s*×xX]+/)", script)
+        self.assertIn(r".split(/\r\n|\n|\r/)", script)
+        self.assertIn(r"line.split(/[\s*＊×xXｘＸ✕✖⨯]+/)", script)
         self.assertIn("quantity: readNonNegativeInteger(quantity", script)
         self.assertIn("exportExcelButton.addEventListener", script)
         self.assertIn("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", script)
@@ -232,6 +234,39 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn('elements.importBoxesButton.addEventListener("click", importBulkBoxes)', script)
         self.assertIn("if (!elements.bulkBoxInput) {", script)
         self.assertIn("批量粘贴入口不可用", script)
+
+    def test_bulk_box_import_accepts_mac_newlines_and_full_width_separators(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+const boxes = context.parseBulkBoxLines("140＊105＊94＊20\r107✕107✖117⨯10\r\n443*95*109*1");
+const expected = [
+  { length: 140, width: 105, height: 94, quantity: 20, rotatable: true },
+  { length: 107, width: 107, height: 117, quantity: 10, rotatable: true },
+  { length: 443, width: 95, height: 109, quantity: 1, rotatable: true },
+];
+if (JSON.stringify(boxes) !== JSON.stringify(expected)) {
+  throw new Error(`unexpected boxes: ${JSON.stringify(boxes)}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
 
     def test_visualizer_styles_scene_tooltip_and_clearer_box_edges(self):
         css = Path("web/styles.css").read_text(encoding="utf-8")

@@ -368,7 +368,7 @@ function importBulkBoxes() {
 
 function parseBulkBoxLines(rawValue) {
   const boxes = String(rawValue)
-    .split(/\r?\n/)
+    .split(/\r\n|\n|\r/)
     .map((line, index) => parseBulkBoxLine(line, index))
     .filter(Boolean);
   if (boxes.length === 0) {
@@ -382,7 +382,7 @@ function parseBulkBoxLine(rawLine, index) {
   if (!line) {
     return null;
   }
-  const parts = line.split(/[\s*×xX]+/).filter(Boolean);
+  const parts = line.split(/[\s*＊×xXｘＸ✕✖⨯]+/).filter(Boolean);
   if (parts.length !== 4) {
     throw new Error(`第 ${index + 1} 行格式应为：长*宽*高*数量`);
   }
