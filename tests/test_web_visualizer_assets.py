@@ -19,6 +19,8 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "sliceValue",
             "loadedList",
             "historyList",
+            "bulkBoxInput",
+            "importBoxesButton",
             "activeContainerStats",
             "selectedBoxDetails",
             "isometricViewButton",
@@ -35,6 +37,9 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertNotIn("x 从 ULD 前端沿长度方向量起", html)
         self.assertNotIn('class="slice-note"', html)
         self.assertIn("添加 ULD", html)
+        self.assertIn("批量粘贴箱子", html)
+        self.assertIn("识别并添加箱子", html)
+        self.assertIn("140*105*94*20", html)
         self.assertIn('<h1>Multi ULD Profile Packing</h1>', html)
         self.assertIn('class="header-actions"', html)
         self.assertIn('class="panel-title"', html)
@@ -98,6 +103,9 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "renderHistoryRecords",
             "selectHistoryRecord",
             "historyRecordLabel",
+            "importBulkBoxes",
+            "parseBulkBoxLines",
+            "parseBulkBoxLine",
             "updateHoveredScenePlacement",
             "clearHoveredScenePlacement",
             "renderSceneTooltip",
@@ -148,6 +156,12 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("function lightenColor(color, ratio)", script)
         self.assertIn("function rgbaColor(color, alpha)", script)
         self.assertIn("focusedBoxId", script)
+        self.assertIn("importBoxesButton.addEventListener", script)
+        self.assertIn("bulkBoxInput", script)
+        self.assertIn("140*105*94*20", script)
+        self.assertIn("40.5*40.5*14*1", script)
+        self.assertIn(r"line.split(/[\s*×xX]+/)", script)
+        self.assertIn("quantity: readNonNegativeInteger(quantity", script)
         self.assertIn("MAX_HISTORY_RECORDS = 10", script)
         self.assertIn("HISTORY_STORAGE_KEY", script)
         self.assertIn("localStorage", script)
@@ -162,6 +176,14 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertNotIn("rect.width > 52", script)
         self.assertNotIn("允许旋转", script)
 
+    def test_visualizer_script_keeps_default_loading_when_bulk_import_controls_are_absent(self):
+        script = Path("web/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("if (elements.importBoxesButton) {", script)
+        self.assertIn('elements.importBoxesButton.addEventListener("click", importBulkBoxes)', script)
+        self.assertIn("if (!elements.bulkBoxInput) {", script)
+        self.assertIn("批量粘贴入口不可用", script)
+
     def test_visualizer_styles_scene_tooltip_and_clearer_box_edges(self):
         css = Path("web/styles.css").read_text(encoding="utf-8")
 
@@ -172,6 +194,8 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn(".result-section", css)
         self.assertIn(".history-list", css)
         self.assertIn(".history-record", css)
+        self.assertIn(".bulk-box-import", css)
+        self.assertIn(".bulk-box-import textarea", css)
         self.assertIn("minmax(370px, 0.95fr) minmax(640px, 1.9fr) minmax(350px, 0.92fr)", css)
         self.assertIn("grid-template-rows: auto minmax(560px, 1fr) auto auto", css)
         self.assertIn("min-height: 900px", css)
@@ -185,20 +209,34 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.68)", css)
         self.assertIn("background: linear-gradient(160deg, #040813 0%, #071426 52%, #01040a 100%)", css)
 
-    def test_visualizer_defaults_to_one_sample_row_and_auto_ids_new_rows(self):
+    def test_visualizer_defaults_to_field_uld_rows_and_no_sample_box(self):
         script = Path("web/app.js").read_text(encoding="utf-8")
         sample = json.loads(Path("data/profile_packing_input.json").read_text(encoding="utf-8"))
+        expected_containers = [
+            ("Q7", 306, [[0, 0], [240, 0], [240, 240], [120, 240], [0, 290]]),
+            ("Q6", 306, [[0, 0], [240, 0], [240, 240], [0, 240]]),
+            ("L", 346, [[0, 0], [240, 0], [240, 160], [0, 160]]),
+            ("PGA", 600, [[0, 0], [240, 0], [240, 190], [120, 290], [0, 290]]),
+            ("Q5", 306, [[0, 0], [240, 0], [240, 190], [120, 190], [0, 290]]),
+        ]
 
-        self.assertIn('id: "ULD-A"', script)
-        self.assertIn('id: "BOX-A"', script)
-        self.assertNotIn('id: "ULD-B"', script)
+        for container_id, length, _ in expected_containers:
+            self.assertIn(f'id: "{container_id}"', script)
+            self.assertIn(f"length: {length}", script)
+        self.assertNotIn('id: "BOX-A"', script)
         self.assertNotIn('id: "BOX-B"', script)
         self.assertIn("function nextAlphabeticId", script)
         self.assertIn("function alphabeticLabel", script)
         self.assertIn('nextAlphabeticId("ULD", ".container-id")', script)
         self.assertIn('nextAlphabeticId("BOX", ".box-id")', script)
-        self.assertEqual([container["id"] for container in sample["containers"]], ["ULD-A"])
-        self.assertEqual([box["id"] for box in sample["boxes"]], ["BOX-A"])
+        self.assertEqual(
+            [(container["id"], container["length"], container["cross_section"]) for container in sample["containers"]],
+            expected_containers,
+        )
+        self.assertTrue(all(isinstance(container["quantity"], int) and container["quantity"] >= 0 for container in sample["containers"]))
+        self.assertIn('class="container-quantity" type="number" min="0"', script)
+        self.assertIn("readNonNegativeInteger(row.querySelector(\".container-quantity\").value", script)
+        self.assertEqual(sample["boxes"], [])
 
 
 if __name__ == "__main__":

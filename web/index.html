@@ -17,19 +17,17 @@
     </header>
 
     <main class="workspace">
-      <section class="panel input-panel" aria-labelledby="input-title">
+      <section class="panel uld-panel" aria-labelledby="uld-title">
         <div class="panel-title">
-          <span class="panel-kicker">Setup</span>
-          <h2 id="input-title">输入参数</h2>
-          <p>配置 ULD 与箱子清单，计算后在中间查看装箱方案。</p>
+          <span class="panel-kicker">Containers</span>
+          <h2 id="uld-title">ULD</h2>
+          <p>配置 ULD 实例与截面，每条记录代表一类 ULD。</p>
         </div>
-
         <div class="section-card">
           <div class="section-heading">
-            <h3>ULD</h3>
+            <h3>ULD 列表</h3>
             <button id="addContainerButton" type="button" class="secondary-button small-button">添加 ULD</button>
           </div>
-
           <div class="table-scroll">
             <table class="container-table">
               <thead>
@@ -45,13 +43,30 @@
             </table>
           </div>
         </div>
+      </section>
 
+      <section class="panel boxes-panel" aria-labelledby="boxes-title">
+        <div class="panel-title">
+          <span class="panel-kicker">Boxes</span>
+          <h2 id="boxes-title">箱子</h2>
+          <p>添加或批量粘贴箱型，计算后查看装箱方案。</p>
+        </div>
         <div class="section-card">
           <div class="section-heading">
-            <h3>箱子</h3>
+            <h3>箱型列表</h3>
             <button id="addBoxButton" type="button" class="secondary-button small-button">添加箱子</button>
           </div>
-
+          <div class="bulk-box-import">
+            <label for="bulkBoxInput">
+              批量粘贴箱子
+              <textarea
+                id="bulkBoxInput"
+                rows="5"
+                placeholder="每行一个箱型：长*宽*高*数量&#10;例如：140*105*94*20&#10;40.5*40.5*14*1"
+              ></textarea>
+            </label>
+            <button id="importBoxesButton" type="button" class="secondary-button small-button">识别并添加箱子</button>
+          </div>
           <div class="table-scroll">
             <table class="box-table">
               <thead>
@@ -69,8 +84,28 @@
             </table>
           </div>
         </div>
-
         <p id="errorMessage" class="error-message" role="alert"></p>
+      </section>
+
+      <section class="panel result-overview" aria-labelledby="overview-title">
+        <div class="panel-title">
+          <span class="panel-kicker">Result</span>
+          <h2 id="overview-title">计算结果</h2>
+          <p>总体装载情况与最近的计算记录。</p>
+        </div>
+        <div id="summaryCards" class="summary-grid"></div>
+        <div class="result-section">
+          <h3>最近10次计算记录</h3>
+          <div id="historyList" class="history-list muted-text">暂无计算记录</div>
+        </div>
+        <div class="result-section">
+          <h3>已装箱类型</h3>
+          <div id="loadedList" class="result-list muted-text">暂无</div>
+        </div>
+        <div class="result-section">
+          <h3>未装箱</h3>
+          <div id="unloadedList" class="result-list muted-text">暂无</div>
+        </div>
       </section>
 
       <section class="panel viewer-panel" aria-labelledby="viewer-title">
@@ -124,19 +159,12 @@
         </div>
       </section>
 
-      <section class="panel result-panel" aria-labelledby="result-title">
+      <section class="panel result-details" aria-labelledby="details-title">
         <div class="panel-title">
-          <span class="panel-kicker">Result</span>
-          <h2 id="result-title">计算结果</h2>
-          <p>查看总体结果、当前 ULD 和装箱坐标。</p>
+          <span class="panel-kicker">Details</span>
+          <h2 id="details-title">装载明细</h2>
+          <p>查看 ULD 单体装载与箱子坐标。</p>
         </div>
-        <div id="summaryCards" class="summary-grid"></div>
-
-        <div class="result-section">
-          <h3>最近10次计算记录</h3>
-          <div id="historyList" class="history-list muted-text">暂无计算记录</div>
-        </div>
-
         <div class="result-section">
           <h3>当前 ULD</h3>
           <label class="container-selector-label">
@@ -145,22 +173,10 @@
           </label>
           <div id="activeContainerStats" class="active-container-stats muted-text">选择 ULD 后显示单个 ULD 装载率。</div>
         </div>
-
-        <div class="result-section">
-          <h3>已装箱类型</h3>
-          <div id="loadedList" class="result-list muted-text">暂无</div>
-        </div>
-
-        <div class="result-section">
-          <h3>未装箱</h3>
-          <div id="unloadedList" class="result-list muted-text">暂无</div>
-        </div>
-
         <div class="result-section">
           <h3>当前选中箱子</h3>
           <div id="selectedBoxDetails" class="selected-box-card muted-text">点击 3D 视图、三视图或坐标表中的箱子查看位置范围。</div>
         </div>
-
         <div class="result-section">
           <h3>装箱坐标</h3>
           <div class="table-scroll placements-scroll">

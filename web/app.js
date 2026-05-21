@@ -1,21 +1,65 @@
 const fallbackInput = {
   containers: [
     {
-      id: "ULD-A",
-      length: 300,
+      id: "Q7",
+      length: 306,
       quantity: 1,
       cross_section: [
         [0, 0],
-        [220, 0],
-        [220, 110],
-        [170, 160],
+        [240, 0],
+        [240, 240],
+        [120, 240],
+        [0, 290],
+      ],
+    },
+    {
+      id: "Q6",
+      length: 306,
+      quantity: 1,
+      cross_section: [
+        [0, 0],
+        [240, 0],
+        [240, 240],
+        [0, 240],
+      ],
+    },
+    {
+      id: "L",
+      length: 346,
+      quantity: 1,
+      cross_section: [
+        [0, 0],
+        [240, 0],
+        [240, 160],
         [0, 160],
       ],
     },
+    {
+      id: "PGA",
+      length: 600,
+      quantity: 1,
+      cross_section: [
+        [0, 0],
+        [240, 0],
+        [240, 190],
+        [120, 290],
+        [0, 290],
+      ],
+    },
+    {
+      id: "Q5",
+      length: 306,
+      quantity: 1,
+      cross_section: [
+        [0, 0],
+        [240, 0],
+        [240, 190],
+        [120, 190],
+        [0, 290],
+      ],
+    },
   ],
-  boxes: [
-    { id: "BOX-A", length: 60, width: 40, height: 30, quantity: 10, rotatable: true },
-  ],
+  boxes: [],
   objective: "maximize_volume",
 };
 
@@ -23,6 +67,7 @@ const AXIS_EXTENSION_FACTOR = 1.18;
 const BOX_ANIMATION_INTERVAL_MS = 320;
 const MAX_HISTORY_RECORDS = 10;
 const HISTORY_STORAGE_KEY = "uld-packing-history";
+const BULK_BOX_EXAMPLE = "140*105*94*20\n40.5*40.5*14*1";
 const BOX_COLOR_PALETTE = [
   { r: 14, g: 165, b: 233 },
   { r: 245, g: 158, b: 11 },
@@ -98,6 +143,8 @@ function cacheElements() {
   elements.containerSelector = document.getElementById("containerSelector");
   elements.boxTableBody = document.getElementById("boxTableBody");
   elements.addBoxButton = document.getElementById("addBoxButton");
+  elements.bulkBoxInput = document.getElementById("bulkBoxInput");
+  elements.importBoxesButton = document.getElementById("importBoxesButton");
   elements.calculateButton = document.getElementById("calculateButton");
   elements.loadSampleButton = document.getElementById("loadSampleButton");
   elements.resetViewButton = document.getElementById("resetViewButton");
@@ -131,6 +178,9 @@ function cacheElements() {
 function bindEvents() {
   elements.addContainerButton.addEventListener("click", () => addContainerRow());
   elements.addBoxButton.addEventListener("click", () => addBoxRow());
+  if (elements.importBoxesButton) {
+    elements.importBoxesButton.addEventListener("click", importBulkBoxes);
+  }
   elements.calculateButton.addEventListener("click", () => calculatePacking());
   elements.containerSelector.addEventListener("change", () => selectContainer(elements.containerSelector.value));
   elements.loadSampleButton.addEventListener("click", async () => {
@@ -252,7 +302,7 @@ function addContainerRow(container = {}) {
   row.innerHTML = `
     <td><input class="container-id" type="text" value="${escapeAttribute(id)}" aria-label="ULD ID" /></td>
     <td><input class="container-length" type="number" min="1" step="1" value="${container.length ?? 300}" aria-label="ULD 长度" /></td>
-    <td><input class="container-quantity" type="number" min="1" step="1" value="${container.quantity ?? 1}" aria-label="ULD 数量" /></td>
+    <td><input class="container-quantity" type="number" min="0" step="1" value="${container.quantity ?? 1}" aria-label="ULD 数量" /></td>
     <td><textarea class="container-cross-section" rows="3" aria-label="ULD y-z 截面点">${escapeHtml(JSON.stringify(crossSection))}</textarea></td>
     <td><button class="icon-button" type="button" aria-label="删除 ULD">×</button></td>
   `;
@@ -274,6 +324,50 @@ function addBoxRow(box = {}) {
   `;
   row.querySelector("button").addEventListener("click", () => row.remove());
   elements.boxTableBody.appendChild(row);
+}
+
+function importBulkBoxes() {
+  try {
+    clearError();
+    if (!elements.bulkBoxInput) {
+      throw new Error("批量粘贴入口不可用");
+    }
+    const boxes = parseBulkBoxLines(elements.bulkBoxInput.value);
+    boxes.forEach((box) => addBoxRow(box));
+    elements.bulkBoxInput.value = "";
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+function parseBulkBoxLines(rawValue) {
+  const boxes = String(rawValue)
+    .split(/\r?\n/)
+    .map((line, index) => parseBulkBoxLine(line, index))
+    .filter(Boolean);
+  if (boxes.length === 0) {
+    throw new Error(`请先粘贴箱子尺寸，格式为：${BULK_BOX_EXAMPLE.split("\n")[0]}`);
+  }
+  return boxes;
+}
+
+function parseBulkBoxLine(rawLine, index) {
+  const line = rawLine.trim();
+  if (!line) {
+    return null;
+  }
+  const parts = line.split(/[\s*×xX]+/).filter(Boolean);
+  if (parts.length !== 4) {
+    throw new Error(`第 ${index + 1} 行格式应为：长*宽*高*数量`);
+  }
+  const [length, width, height, quantity] = parts;
+  return {
+    length: readPositiveNumber(length, `第 ${index + 1} 行长度`),
+    width: readPositiveNumber(width, `第 ${index + 1} 行宽度`),
+    height: readPositiveNumber(height, `第 ${index + 1} 行高度`),
+    quantity: readNonNegativeInteger(quantity, `第 ${index + 1} 行数量`),
+    rotatable: true,
+  };
 }
 
 function nextAlphabeticId(prefix, selector) {
@@ -448,7 +542,7 @@ function readContainersFromForm() {
     return {
       id,
       length: readPositiveNumber(row.querySelector(".container-length").value, `${id} 长度`),
-      quantity: readPositiveInteger(row.querySelector(".container-quantity").value, `${id} 数量`),
+      quantity: readNonNegativeInteger(row.querySelector(".container-quantity").value, `${id} 数量`),
       cross_section: crossSection,
     };
   });
