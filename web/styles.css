@@ -186,6 +186,22 @@ select:focus-visible {
   gap: 10px;
 }
 
+.search-mode-label {
+  display: grid;
+  grid-template-columns: auto minmax(150px, 1fr);
+  gap: 8px;
+  align-items: center;
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.search-mode-label select {
+  height: 40px;
+  min-width: 150px;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(520px, 1.3fr) minmax(480px, 1.15fr) minmax(320px, 0.85fr);
@@ -1045,6 +1061,19 @@ input[type="range"] {
   text-transform: uppercase;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+.history-record .history-mode {
+  position: absolute;
+  top: 12px;
+  right: 18px;
+  padding: 2px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: var(--muted-strong);
+  background: rgba(15, 23, 42, 0.5);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
 }
 
 .history-record .history-headline {

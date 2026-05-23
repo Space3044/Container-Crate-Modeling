@@ -69,6 +69,7 @@ def profile_input_from_dict(data: dict[str, object]) -> ProfilePackingInput:
         uld=uld,
         boxes=boxes,
         objective=data.get("objective", "maximize_volume"),
+        search_mode=data.get("search_mode", "balanced"),
     )
 
 
@@ -87,6 +88,7 @@ def multi_container_input_from_dict(data: dict[str, object]) -> MultiContainerPa
         containers=containers,
         boxes=boxes,
         objective=data.get("objective", "maximize_volume"),
+        search_mode=data.get("search_mode", "balanced"),
     )
 
 

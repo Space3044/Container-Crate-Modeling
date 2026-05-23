@@ -178,6 +178,40 @@ class ProfilePackerTests(unittest.TestCase):
         self.assertEqual([(item.box_id, item.quantity) for item in result.loaded], [("B", 2), ("D", 1)])
         self.assertTrue(result.validation_passed)
 
+    def test_extreme_points_project_back_to_supporting_box_top(self):
+        problem = ProfilePackingInput(
+            uld=ULDProfile(
+                id="ULD-001",
+                length=100,
+                cross_section=[(0, 0), (60, 0), (60, 50), (0, 50)],
+            ),
+            boxes=[],
+        )
+        base = BoxPlacement("BASE", "BASE-001", 0, 0, 0, 40, 40, 20)
+        neighbor = BoxPlacement("NEI", "NEI-001", 40, 0, 0, 30, 40, 10)
+
+        points = profile_packer._extreme_points(neighbor, [base, neighbor], problem)
+
+        self.assertIn((40, 0, 10), points)
+        self.assertIn((70, 0, 0), points)
+        self.assertIn((40, 0, 0), points)
+
+    def test_extreme_points_push_top_corner_back_to_lower_neighbor(self):
+        problem = ProfilePackingInput(
+            uld=ULDProfile(
+                id="ULD-001",
+                length=100,
+                cross_section=[(0, 0), (60, 0), (60, 50), (0, 50)],
+            ),
+            boxes=[],
+        )
+        base = BoxPlacement("BASE", "BASE-001", 0, 0, 0, 60, 30, 15)
+        target = BoxPlacement("TGT", "TGT-001", 10, 0, 0, 40, 30, 30)
+
+        points = profile_packer._extreme_points(target, [base, target], problem)
+
+        self.assertIn((10, 0, 15), points)
+
 
 if __name__ == "__main__":
     unittest.main()

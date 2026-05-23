@@ -23,6 +23,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "exportExcelButton",
             "bulkBoxInput",
             "importBoxesButton",
+            "searchModeSelect",
             "activeContainerStats",
             "selectedBoxDetails",
             "isometricViewButton",
@@ -41,6 +42,10 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("添加 ULD", html)
         self.assertIn("批量粘贴箱子", html)
         self.assertIn("识别并添加箱子", html)
+        self.assertIn("算法模式", html)
+        self.assertIn('value="fast"', html)
+        self.assertIn('value="balanced"', html)
+        self.assertIn('value="high_utilization"', html)
         self.assertIn("140*105*94*20", html)
         self.assertIn('<h1>Multi ULD Profile Packing</h1>', html)
         self.assertIn('class="header-actions"', html)
@@ -210,6 +215,12 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("装箱坐标", script)
         self.assertIn("MAX_HISTORY_RECORDS = 10", script)
         self.assertIn("HISTORY_STORAGE_KEY", script)
+        self.assertIn('elements.searchModeSelect = document.getElementById("searchModeSelect")', script)
+        self.assertIn("search_mode: elements.searchModeSelect.value", script)
+        self.assertIn("search_mode: input.search_mode ?? \"balanced\"", script)
+        self.assertIn("function searchModeLabel", script)
+        self.assertIn("record.input?.search_mode ?? \"balanced\"", script)
+        self.assertIn('class="history-mode"', script)
         self.assertIn('fetch("/api/history")', script)
         self.assertIn('fetch("/api/history", {', script)
         self.assertIn("await loadPersistedHistoryRecords()", script)
@@ -299,6 +310,9 @@ if (JSON.stringify(boxes) !== JSON.stringify(expected)) {
         self.assertIn("height: var(--history-list-height)", css)
         self.assertIn("max-height: var(--history-list-height)", css)
         self.assertIn("height: var(--history-record-height)", css)
+        self.assertIn(".history-record .history-mode", css)
+        self.assertIn("top: 12px", css)
+        self.assertIn("right: 18px", css)
         self.assertIn(".uld-panel .table-scroll,\n.boxes-panel .table-scroll {\n  overflow-x: hidden;", css)
         self.assertIn(".box-table th:nth-child(n+5),\n.box-table td:nth-child(n+5)", css)
         self.assertIn(".box-table td:nth-child(5) input", css)
@@ -323,7 +337,7 @@ if (JSON.stringify(boxes) !== JSON.stringify(expected)) {
             ("Q6", 306, [[0, 0], [240, 0], [240, 240], [0, 240]]),
             ("L", 346, [[0, 0], [240, 0], [240, 160], [0, 160]]),
             ("PGA", 600, [[0, 0], [240, 0], [240, 190], [120, 290], [0, 290]]),
-            ("Q5", 306, [[0, 0], [240, 0], [240, 290], [120, 290], [0, 290]]),
+            ("Q5", 306, [[0, 0], [240, 0], [240, 190], [120, 290], [0, 290]]),
         ]
 
         for container_id, length, _ in expected_containers:

@@ -61,6 +61,7 @@ const fallbackInput = {
   ],
   boxes: [],
   objective: "maximize_volume",
+  search_mode: "balanced",
 };
 
 const AXIS_EXTENSION_FACTOR = 1.18;
@@ -167,6 +168,7 @@ function cacheElements() {
   elements.addBoxButton = document.getElementById("addBoxButton");
   elements.bulkBoxInput = document.getElementById("bulkBoxInput");
   elements.importBoxesButton = document.getElementById("importBoxesButton");
+  elements.searchModeSelect = document.getElementById("searchModeSelect");
   elements.calculateButton = document.getElementById("calculateButton");
   elements.loadSampleButton = document.getElementById("loadSampleButton");
   elements.resetViewButton = document.getElementById("resetViewButton");
@@ -271,6 +273,7 @@ function writeInputToForm(input) {
   normalized.containers.forEach((container) => addContainerRow(container));
   elements.boxTableBody.innerHTML = "";
   normalized.boxes.forEach((box) => addBoxRow(box));
+  elements.searchModeSelect.value = normalized.search_mode;
 }
 
 async function readJsonResponse(response) {
@@ -296,6 +299,7 @@ function normalizeInput(input) {
       })),
       boxes: input.boxes ?? [],
       objective: input.objective ?? "maximize_volume",
+      search_mode: input.search_mode ?? "balanced",
     };
   }
   if (input?.uld) {
@@ -310,6 +314,7 @@ function normalizeInput(input) {
       ],
       boxes: input.boxes ?? [],
       objective: input.objective ?? "maximize_volume",
+      search_mode: input.search_mode ?? "balanced",
     };
   }
   return structuredClone(fallbackInput);
@@ -1110,8 +1115,10 @@ function historyRecordLabel(record) {
   const loaded = result.loaded_count ?? 0;
   const unloaded = result.unloaded_count ?? 0;
   const util = formatPercent(result.volume_utilization);
+  const mode = searchModeLabel(record.input?.search_mode ?? "balanced");
   return `
     <span class="history-time">${escapeHtml(time)}</span>
+    <span class="history-mode">${escapeHtml(mode)}</span>
     <span class="history-headline">
       <span class="history-stat history-loaded"><em>已装</em><b>${loaded}</b></span>
       <span class="history-stat history-unloaded"><em>未装</em><b>${unloaded}</b></span>
@@ -1120,11 +1127,21 @@ function historyRecordLabel(record) {
   `;
 }
 
+function searchModeLabel(value) {
+  const labels = {
+    fast: "快速",
+    balanced: "均衡",
+    high_utilization: "高装载率",
+  };
+  return labels[value] ?? labels.balanced;
+}
+
 function readInputFromForm() {
   return {
     containers: readContainersFromForm(),
     boxes: readBoxesFromForm(),
     objective: "maximize_volume",
+    search_mode: elements.searchModeSelect.value,
   };
 }
 
@@ -1294,6 +1311,7 @@ function getActiveProfileInput() {
     },
     boxes: state.input.boxes,
     objective: state.input.objective ?? "maximize_volume",
+    search_mode: state.input.search_mode ?? "balanced",
   };
 }
 

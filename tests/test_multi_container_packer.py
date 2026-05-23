@@ -10,6 +10,9 @@ from cargo_loading.profile_packer import (
     _global_placement_branches,
     _global_search_limits,
     _initial_global_state,
+    _local_rearrange_state,
+    _ruin_and_recreate,
+    _worst_container_indices,
     pack_multi_profile,
 )
 
@@ -104,16 +107,16 @@ class MultiContainerPackerTests(unittest.TestCase):
 
         result = pack_multi_profile(problem)
 
-        self.assertEqual(result.used_volume, 1500)
+        self.assertEqual(result.used_volume, 1000)
         self.assertEqual(result.loaded_count, 2)
         self.assertEqual(result.unloaded_count, 1)
-        self.assertEqual([(item.box_id, item.quantity) for item in result.loaded], [("LONG", 1), ("SHORT", 1)])
+        self.assertEqual([(item.box_id, item.quantity) for item in result.loaded], [("SHORT", 2)])
         self.assertEqual(
             {
                 container.container_id: [placement.box_id for placement in container.result.placements]
                 for container in result.containers
             },
-            {"BIG-001": ["LONG"], "SMALL-001": ["SHORT"]},
+            {"BIG-001": ["SHORT", "SHORT"], "SMALL-001": []},
         )
         self.assertTrue(result.validation_passed)
 
@@ -417,6 +420,137 @@ class MultiContainerPackerTests(unittest.TestCase):
         expected_count = min(MAX_GLOBAL_CONTAINER_CANDIDATES, _global_search_limits(problem).container_candidates)
         self.assertEqual(len(options), expected_count)
         self.assertEqual([option[1].container_id for option in options], [f"ULD-{index:02d}-001" for index in range(expected_count)])
+
+    def test_global_search_limits_follow_search_mode(self):
+        containers = [
+            ContainerSpec(
+                id="RECT",
+                length=120,
+                cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+                quantity=1,
+            )
+        ]
+        boxes = [BoxSpec(id="BOX-A", length=40, width=40, height=40, quantity=20)]
+
+        fast_limits = _global_search_limits(MultiContainerPackingInput(containers=containers, boxes=boxes, search_mode="fast"))
+        balanced_limits = _global_search_limits(MultiContainerPackingInput(containers=containers, boxes=boxes, search_mode="balanced"))
+        high_limits = _global_search_limits(
+            MultiContainerPackingInput(containers=containers, boxes=boxes, search_mode="high_utilization")
+        )
+
+        self.assertLess(fast_limits.beam_width, balanced_limits.beam_width)
+        self.assertLess(fast_limits.global_branches_per_state, balanced_limits.global_branches_per_state)
+        self.assertGreater(high_limits.beam_width, balanced_limits.beam_width)
+        self.assertGreater(high_limits.placement_branches, balanced_limits.placement_branches)
+        self.assertGreater(high_limits.candidate_points, balanced_limits.candidate_points)
+
+    def test_local_rearrange_is_noop_outside_high_utilization_mode(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=100,
+                    cross_section=[(0, 0), (60, 0), (60, 50), (0, 50)],
+                    quantity=1,
+                )
+            ],
+            boxes=[BoxSpec(id="BOX", length=20, width=20, height=20, quantity=4)],
+            search_mode="balanced",
+        )
+        box_by_id = {box.id: box for box in problem.boxes}
+        limits = _global_search_limits(problem)
+        initial_state = _initial_global_state(problem)
+
+        result_state = _local_rearrange_state(problem, initial_state, box_by_id, limits)
+
+        self.assertIs(result_state, initial_state)
+
+    def test_worst_container_indices_picks_lowest_utilization_and_skips_empties(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=100,
+                    cross_section=[(0, 0), (50, 0), (50, 50), (0, 50)],
+                    quantity=3,
+                )
+            ],
+            boxes=[BoxSpec(id="BOX", length=50, width=50, height=50, quantity=1)],
+        )
+        state = _initial_global_state(problem)
+        big_box = BoxSpec(id="BIG", length=50, width=50, height=50, quantity=1)
+        small_box = BoxSpec(id="SMALL", length=10, width=10, height=10, quantity=1)
+        from cargo_loading.profile_models import BoxPlacement
+
+        state.containers[0].placements.append(
+            BoxPlacement("BIG", "BIG-001", 0, 0, 0, big_box.length, big_box.width, big_box.height)
+        )
+        state.containers[1].placements.append(
+            BoxPlacement("SMALL", "SMALL-001", 0, 0, 0, small_box.length, small_box.width, small_box.height)
+        )
+
+        indices = _worst_container_indices(state, count=2, skip_indices=set())
+
+        self.assertEqual(indices, [1, 0])
+
+    def test_ruin_and_recreate_strips_top_layer_and_keeps_bottom(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=100,
+                    cross_section=[(0, 0), (50, 0), (50, 50), (0, 50)],
+                    quantity=1,
+                )
+            ],
+            boxes=[BoxSpec(id="BOX", length=50, width=50, height=20, quantity=2)],
+            search_mode="high_utilization",
+        )
+        box_by_id = {box.id: box for box in problem.boxes}
+        limits = _global_search_limits(problem)
+        state = _initial_global_state(problem)
+        from cargo_loading.profile_models import BoxPlacement
+
+        bottom = BoxPlacement("BOX", "BOX-001", 0, 0, 0, 50, 50, 20)
+        top = BoxPlacement("BOX", "BOX-002", 0, 0, 20, 50, 50, 20)
+        state.containers[0].placements.extend([bottom, top])
+        state.remaining_counter["BOX"] = 0
+
+        new_state = _ruin_and_recreate(problem, state, box_by_id, limits, [0])
+
+        placements = new_state.containers[0].placements
+        self.assertGreaterEqual(len(placements), 1)
+        self.assertTrue(any(placement.z == 0 for placement in placements))
+        self.assertEqual(new_state.remaining_counter["BOX"], 2 - len(placements))
+
+    def test_pack_multi_profile_high_utilization_does_not_regress(self):
+        problem_balanced = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=100,
+                    cross_section=[(0, 0), (60, 0), (60, 50), (0, 50)],
+                    quantity=2,
+                )
+            ],
+            boxes=[
+                BoxSpec(id="BIG", length=60, width=50, height=30, quantity=2),
+                BoxSpec(id="MID", length=30, width=30, height=20, quantity=4),
+            ],
+            search_mode="balanced",
+        )
+        problem_high = MultiContainerPackingInput(
+            containers=problem_balanced.containers,
+            boxes=problem_balanced.boxes,
+            search_mode="high_utilization",
+        )
+
+        balanced_result = pack_multi_profile(problem_balanced)
+        high_result = pack_multi_profile(problem_high)
+
+        self.assertGreaterEqual(high_result.used_volume, balanced_result.used_volume)
+        self.assertLessEqual(high_result.unloaded_count, balanced_result.unloaded_count)
+        self.assertTrue(high_result.validation_passed)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,14 @@
     <header class="app-header">
       <h1>Multi ULD Profile Packing</h1>
       <div class="header-actions">
+        <label class="search-mode-label" for="searchModeSelect">
+          算法模式
+          <select id="searchModeSelect">
+            <option value="fast">快速模式</option>
+            <option value="balanced" selected>均衡模式</option>
+            <option value="high_utilization">高装载率模式</option>
+          </select>
+        </label>
         <button id="loadSampleButton" type="button" class="secondary-button">载入示例</button>
         <button id="calculateButton" type="button" class="primary-button">计算装箱</button>
       </div>

@@ -8,6 +8,10 @@ class PackingInputError(ValueError):
 
 
 Point2D = tuple[float, float]
+SEARCH_MODE_FAST = "fast"
+SEARCH_MODE_BALANCED = "balanced"
+SEARCH_MODE_HIGH_UTILIZATION = "high_utilization"
+VALID_SEARCH_MODES = {SEARCH_MODE_FAST, SEARCH_MODE_BALANCED, SEARCH_MODE_HIGH_UTILIZATION}
 
 
 def _positive(value: float, name: str) -> None:
@@ -18,6 +22,11 @@ def _positive(value: float, name: str) -> None:
 def _non_empty(value: str, name: str) -> None:
     if not value:
         raise PackingInputError(f"{name} must not be empty")
+
+
+def _valid_search_mode(value: str) -> None:
+    if value not in VALID_SEARCH_MODES:
+        raise PackingInputError(f"search_mode must be one of {sorted(VALID_SEARCH_MODES)}")
 
 
 @dataclass(frozen=True)
@@ -76,6 +85,10 @@ class ProfilePackingInput:
     uld: ULDProfile
     boxes: list[BoxSpec]
     objective: str = "maximize_volume"
+    search_mode: str = SEARCH_MODE_BALANCED
+
+    def __post_init__(self) -> None:
+        _valid_search_mode(self.search_mode)
 
 
 @dataclass(frozen=True)
@@ -83,10 +96,12 @@ class MultiContainerPackingInput:
     containers: list[ContainerSpec]
     boxes: list[BoxSpec]
     objective: str = "maximize_volume"
+    search_mode: str = SEARCH_MODE_BALANCED
 
     def __post_init__(self) -> None:
         if not self.containers:
             raise PackingInputError("containers must not be empty")
+        _valid_search_mode(self.search_mode)
 
 
 @dataclass(frozen=True)

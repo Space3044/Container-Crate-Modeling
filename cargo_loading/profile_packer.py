@@ -14,6 +14,8 @@ from cargo_loading.profile_models import (
     MultiContainerPackingResult,
     ProfilePackingInput,
     ProfilePackingResult,
+    SEARCH_MODE_FAST,
+    SEARCH_MODE_HIGH_UTILIZATION,
     ULDProfile,
     UnloadedBox,
 )
@@ -28,6 +30,8 @@ MAX_GLOBAL_CONTAINER_CANDIDATES = 12
 MAX_BATCH_PLACEMENTS = 8
 MAX_GLOBAL_SEARCH_STEPS = 1000
 MIN_BOTTOM_SUPPORT_RATIO = 0.8
+LOCAL_REARRANGE_MAX_PASSES = 3
+LOCAL_REARRANGE_TARGETS_PER_PASS = 1
 
 
 @dataclass
@@ -84,6 +88,7 @@ def _pack_profile_ordered(
     problem: ProfilePackingInput,
     expanded_boxes: list[tuple[BoxSpec, str]],
 ) -> ProfilePackingResult:
+    limits = _single_search_limits(problem)
     states = [PackingState(placements=[], candidate_points=[(0, 0, 0)], unloaded_counter=Counter())]
     for box, instance_id in expanded_boxes:
         next_states: list[PackingState] = []
@@ -100,16 +105,17 @@ def _pack_profile_ordered(
                     )
                 )
                 continue
-            for placement in candidates[:MAX_PLACEMENT_BRANCHES]:
-                candidate_points = [*state.candidate_points, *_new_candidate_points(placement)]
+            for placement in candidates[: limits.placement_branches]:
+                next_placements = [*state.placements, placement]
+                candidate_points = [*state.candidate_points, *_extreme_points(placement, next_placements, problem)]
                 next_states.append(
                     PackingState(
-                        placements=[*state.placements, placement],
-                        candidate_points=_prune_candidate_points(candidate_points, problem, [*state.placements, placement]),
+                        placements=next_placements,
+                        candidate_points=_prune_candidate_points(candidate_points, problem, next_placements),
                         unloaded_counter=state.unloaded_counter.copy(),
                     )
                 )
-        states = _select_beam_states(problem, next_states, DEFAULT_BEAM_WIDTH)
+        states = _select_beam_states(problem, next_states, limits.beam_width)
 
     best_state = max(states, key=lambda state: _state_score(problem, state)) if states else PackingState([], [(0, 0, 0)], Counter())
     return _profile_result_from_state(problem, best_state)
@@ -148,6 +154,22 @@ def _result_score(result: ProfilePackingResult, objective: str) -> tuple[float, 
     if objective == "maximize_count":
         return (result.loaded_count, result.used_volume, -result.unloaded_count)
     return (result.used_volume, result.loaded_count, -result.unloaded_count)
+
+
+def _single_search_limits(problem: ProfilePackingInput) -> SearchLimits:
+    return _search_limits_for_mode(
+        SearchLimits(
+            beam_width=DEFAULT_BEAM_WIDTH,
+            box_type_candidates=MAX_GLOBAL_BOX_TYPE_CANDIDATES,
+            container_candidates=MAX_GLOBAL_CONTAINER_CANDIDATES,
+            placement_branches=MAX_PLACEMENT_BRANCHES,
+            global_branches_per_state=MAX_GLOBAL_BRANCHES_PER_STATE,
+            batch_placements=MAX_BATCH_PLACEMENTS,
+            max_steps=MAX_GLOBAL_SEARCH_STEPS,
+            candidate_points=80,
+        ),
+        problem.search_mode,
+    )
 
 
 def _select_beam_states(
@@ -213,6 +235,7 @@ def pack_multi_profile(problem: MultiContainerPackingInput) -> MultiContainerPac
 
     best_state = max(states, key=lambda state: _global_state_score(problem, state))
     best_state = _refill_remaining_boxes_in_used_containers(problem, best_state, box_by_id, limits)
+    best_state = _local_rearrange_state(problem, best_state, box_by_id, limits)
     return _multi_result_from_global_state(problem, best_state)
 
 
@@ -232,6 +255,10 @@ def _initial_global_state(problem: MultiContainerPackingInput) -> GlobalPackingS
 
 
 def _global_search_limits(problem: MultiContainerPackingInput) -> SearchLimits:
+    return _search_limits_for_mode(_base_global_search_limits(problem), problem.search_mode)
+
+
+def _base_global_search_limits(problem: MultiContainerPackingInput) -> SearchLimits:
     total_quantity = sum(box.quantity for box in problem.boxes)
     container_count = sum(container.quantity for container in problem.containers)
     box_type_count = len(problem.boxes)
@@ -280,11 +307,38 @@ def _global_search_limits(problem: MultiContainerPackingInput) -> SearchLimits:
     )
 
 
+def _search_limits_for_mode(limits: SearchLimits, search_mode: str) -> SearchLimits:
+    if search_mode == SEARCH_MODE_FAST:
+        return SearchLimits(
+            beam_width=max(2, limits.beam_width // 2),
+            box_type_candidates=max(2, min(limits.box_type_candidates, (limits.box_type_candidates + 1) // 2)),
+            container_candidates=max(2, min(limits.container_candidates, (limits.container_candidates + 1) // 2)),
+            placement_branches=max(1, (limits.placement_branches + 1) // 2),
+            global_branches_per_state=max(8, limits.global_branches_per_state // 2),
+            batch_placements=max(limits.batch_placements, 12),
+            max_steps=max(100, limits.max_steps // 2),
+            candidate_points=max(40, limits.candidate_points // 2),
+        )
+    if search_mode == SEARCH_MODE_HIGH_UTILIZATION:
+        return SearchLimits(
+            beam_width=max(limits.beam_width + 1, round(limits.beam_width * 1.6)),
+            box_type_candidates=max(limits.box_type_candidates + 1, round(limits.box_type_candidates * 1.5)),
+            container_candidates=max(limits.container_candidates + 1, round(limits.container_candidates * 1.5)),
+            placement_branches=max(limits.placement_branches + 1, round(limits.placement_branches * 1.5)),
+            global_branches_per_state=max(limits.global_branches_per_state + 1, round(limits.global_branches_per_state * 1.6)),
+            batch_placements=limits.batch_placements,
+            max_steps=max(limits.max_steps + 1, round(limits.max_steps * 1.5)),
+            candidate_points=max(240, round(limits.candidate_points * 1.8)),
+        )
+    return limits
+
+
 def _global_placement_branches(
     problem: MultiContainerPackingInput,
     state: GlobalPackingState,
     box_by_id: dict[str, BoxSpec],
     limits: SearchLimits | None = None,
+    active_only: bool = False,
 ) -> list[GlobalPackingState]:
     limits = limits or _global_search_limits(problem)
     branches: list[GlobalPackingState] = []
@@ -293,7 +347,7 @@ def _global_placement_branches(
         if tried_box_types >= limits.box_type_candidates and branches:
             break
         tried_box_types += 1
-        for container_index, container_state, profile_input, candidates in _container_candidate_options(problem, state, box, limits):
+        for container_index, container_state, profile_input, candidates in _container_candidate_options(problem, state, box, limits, active_only=active_only):
             quantity = state.remaining_counter[box.id]
             instance_id = f"{box.id}-{box.quantity - quantity + 1:03d}"
             for placement_index, placement in enumerate(candidates[: limits.placement_branches]):
@@ -323,6 +377,7 @@ def _container_candidate_options(
     state: GlobalPackingState,
     box: BoxSpec,
     limits: SearchLimits | None = None,
+    active_only: bool = False,
 ) -> list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]]:
     limits = limits or _global_search_limits(problem)
     quantity = state.remaining_counter[box.id]
@@ -336,6 +391,8 @@ def _container_candidate_options(
     active_options = _container_options_from_pool(problem, active_pool, box, instance_id, limits)
     if active_options:
         return _sort_container_options(active_options, limits)
+    if active_only:
+        return []
 
     container_pool = _candidate_container_pool(state.containers, box, limits)
     return _sort_container_options(
@@ -531,6 +588,209 @@ def _refill_remaining_boxes_in_used_containers(
         current_state = next_state
 
 
+def _local_rearrange_state(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+) -> GlobalPackingState:
+    if problem.search_mode != SEARCH_MODE_HIGH_UTILIZATION:
+        return state
+    if not any(container.placements for container in state.containers):
+        return state
+
+    best_state = state
+    best_score = _global_state_score(problem, best_state)
+    tried_signatures: set[tuple[object, ...]] = {_global_state_signature(best_state)}
+
+    best_state, best_score = _run_rearrange_strategy(
+        problem,
+        best_state,
+        best_score,
+        box_by_id,
+        limits,
+        tried_signatures,
+        _evacuate_and_refill,
+        targets_per_pass=1,
+    )
+    best_state, best_score = _run_rearrange_strategy(
+        problem,
+        best_state,
+        best_score,
+        box_by_id,
+        limits,
+        tried_signatures,
+        _ruin_and_recreate,
+        targets_per_pass=LOCAL_REARRANGE_TARGETS_PER_PASS,
+    )
+    return best_state
+
+
+def _run_rearrange_strategy(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    score: tuple[object, ...],
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+    tried_signatures: set[tuple[object, ...]],
+    strategy,
+    targets_per_pass: int,
+) -> tuple[GlobalPackingState, tuple[object, ...]]:
+    best_state = state
+    best_score = score
+    skip_indices: set[int] = set()
+    for _ in range(LOCAL_REARRANGE_MAX_PASSES):
+        target_indices = _worst_container_indices(best_state, targets_per_pass, skip_indices)
+        if not target_indices:
+            break
+        candidate = strategy(problem, best_state, box_by_id, limits, target_indices)
+        if candidate is best_state:
+            skip_indices.update(target_indices)
+            continue
+        signature = _global_state_signature(candidate)
+        if signature in tried_signatures:
+            skip_indices.update(target_indices)
+            continue
+        tried_signatures.add(signature)
+        candidate_score = _global_state_score(problem, candidate)
+        if candidate_score > best_score:
+            best_state = candidate
+            best_score = candidate_score
+            skip_indices.clear()
+        else:
+            skip_indices.update(target_indices)
+    return best_state, best_score
+
+
+def _worst_container_indices(
+    state: GlobalPackingState,
+    count: int,
+    skip_indices: set[int],
+) -> list[int]:
+    scored: list[tuple[float, int]] = []
+    for index, container in enumerate(state.containers):
+        if index in skip_indices or not container.placements:
+            continue
+        container_volume = container.spec.length * polygon_area(container.spec.cross_section)
+        used_volume = sum(placement.volume for placement in container.placements)
+        utilization = used_volume / container_volume if container_volume else 0
+        scored.append((utilization, index))
+    scored.sort()
+    return [index for _, index in scored[:count]]
+
+
+def _evacuate_and_refill(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+    target_indices: list[int],
+) -> GlobalPackingState:
+    evacuated = _evacuate_containers(state, target_indices)
+    if evacuated is state:
+        return state
+    refilled = _refill_remaining_boxes_in_used_containers(problem, evacuated, box_by_id, limits)
+    resolved = _resolve_active_only_beam(problem, refilled, box_by_id, limits)
+    return resolved
+
+
+def _evacuate_containers(
+    state: GlobalPackingState,
+    target_indices: list[int],
+) -> GlobalPackingState:
+    target_set = set(target_indices)
+    next_remaining = state.remaining_counter.copy()
+    next_containers: list[ContainerState] = []
+    changed = False
+    for index, container in enumerate(state.containers):
+        if index not in target_set or not container.placements:
+            next_containers.append(container)
+            continue
+        for placement in container.placements:
+            next_remaining[placement.box_id] += 1
+        next_containers.append(
+            ContainerState(
+                spec=container.spec,
+                container_id=container.container_id,
+                placements=[],
+                candidate_points=[(0, 0, 0)],
+            )
+        )
+        changed = True
+    if not changed:
+        return state
+    return GlobalPackingState(containers=next_containers, remaining_counter=next_remaining)
+
+
+def _resolve_active_only_beam(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+) -> GlobalPackingState:
+    remaining_count = sum(quantity for quantity in state.remaining_counter.values() if quantity > 0)
+    if remaining_count == 0:
+        return state
+    states = [state]
+    for _ in range(min(remaining_count, limits.max_steps)):
+        next_states: list[GlobalPackingState] = []
+        expanded_any = False
+        for current in states:
+            branches = _global_placement_branches(problem, current, box_by_id, limits, active_only=True)
+            if branches:
+                expanded_any = True
+                next_states.extend(branches)
+            else:
+                next_states.append(current)
+        if not expanded_any:
+            break
+        states = _select_global_beam_states(problem, next_states, limits.beam_width)
+    return max(states, key=lambda candidate: _global_state_score(problem, candidate))
+
+
+def _ruin_and_recreate(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+    target_indices: list[int],
+) -> GlobalPackingState:
+    target_set = set(target_indices)
+    next_remaining = state.remaining_counter.copy()
+    next_containers: list[ContainerState] = []
+    changed = False
+    for index, container in enumerate(state.containers):
+        if index not in target_set or not container.placements:
+            next_containers.append(container)
+            continue
+        top_z = max(placement.z for placement in container.placements)
+        if top_z <= 0:
+            next_containers.append(container)
+            continue
+        kept = [placement for placement in container.placements if placement.z < top_z]
+        removed = [placement for placement in container.placements if placement.z >= top_z]
+        if not kept or not removed:
+            next_containers.append(container)
+            continue
+        for placement in removed:
+            next_remaining[placement.box_id] += 1
+        profile_input = _profile_input_for_container(problem, container)
+        new_points = _refill_candidate_points(profile_input, kept, limits)
+        next_containers.append(
+            ContainerState(
+                spec=container.spec,
+                container_id=container.container_id,
+                placements=kept,
+                candidate_points=new_points,
+            )
+        )
+        changed = True
+    if not changed:
+        return state
+    ruined_state = GlobalPackingState(containers=next_containers, remaining_counter=next_remaining)
+    return _refill_remaining_boxes_in_used_containers(problem, ruined_state, box_by_id, limits)
+
+
 def _next_refill_state(
     problem: MultiContainerPackingInput,
     state: GlobalPackingState,
@@ -538,7 +798,7 @@ def _next_refill_state(
     limits: SearchLimits,
 ) -> GlobalPackingState | None:
     for box in _refill_candidate_box_types(state, box_by_id):
-        option = _best_refill_option(problem, state, box)
+        option = _best_refill_option(problem, state, box, limits)
         if option is None:
             continue
         container_index, container_state, profile_input, placement = option
@@ -566,6 +826,7 @@ def _best_refill_option(
     problem: MultiContainerPackingInput,
     state: GlobalPackingState,
     box: BoxSpec,
+    limits: SearchLimits,
 ) -> tuple[int, ContainerState, ProfilePackingInput, BoxPlacement] | None:
     options: list[tuple[int, ContainerState, ProfilePackingInput, BoxPlacement]] = []
     quantity = state.remaining_counter[box.id]
@@ -576,7 +837,7 @@ def _best_refill_option(
         if not _box_can_fit_container(box, container_state.spec) or _container_remaining_volume(container_state) < box.volume:
             continue
         profile_input = _profile_input_for_container(problem, container_state)
-        candidate_points = _refill_candidate_points(profile_input, container_state.placements, limits=None)
+        candidate_points = _refill_candidate_points(profile_input, container_state.placements, limits=limits)
         candidates = _placement_candidates(
             box,
             instance_id,
@@ -598,7 +859,7 @@ def _refill_candidate_points(
 ) -> list[Point3D]:
     points = [(0, 0, 0)]
     for placement in placements:
-        points.extend(_new_candidate_points(placement))
+        points.extend(_extreme_points(placement, placements, problem))
     max_points = _candidate_point_limit(limits) if limits else 160
     return _prune_candidate_points(points, problem, placements, max_points=max_points)
 
@@ -614,16 +875,17 @@ def _place_box_in_global_state(
 ) -> GlobalPackingState:
     next_remaining = state.remaining_counter.copy()
     next_remaining[box.id] -= 1
+    next_placements = [*container_state.placements, placement]
     next_candidate_points = _prune_candidate_points(
-        [*container_state.candidate_points, *_new_candidate_points(placement)],
+        [*container_state.candidate_points, *_extreme_points(placement, next_placements, profile_input)],
         profile_input,
-        [*container_state.placements, placement],
+        next_placements,
         max_points=_candidate_point_limit(limits),
     )
     next_container = ContainerState(
         spec=container_state.spec,
         container_id=container_state.container_id,
-        placements=[*container_state.placements, placement],
+        placements=next_placements,
         candidate_points=next_candidate_points,
     )
     next_containers = [*state.containers]
@@ -654,8 +916,8 @@ def _global_state_score(problem: MultiContainerPackingInput, state: GlobalPackin
     used_container_count = _used_container_count(state.containers)
     active_container_utilization = _active_container_utilization(state.containers)
     if problem.objective == "maximize_count":
-        return (loaded_count, used_volume, -unloaded_count, -used_container_count, active_container_utilization, -compactness)
-    return (used_volume, loaded_count, -unloaded_count, -used_container_count, active_container_utilization, -compactness)
+        return (-unloaded_count, -used_container_count, loaded_count, used_volume, active_container_utilization, -compactness)
+    return (-unloaded_count, -used_container_count, used_volume, loaded_count, active_container_utilization, -compactness)
 
 
 def _global_state_signature(state: GlobalPackingState) -> tuple[object, ...]:
@@ -966,6 +1228,97 @@ def _new_candidate_points(placement: BoxPlacement) -> list[Point3D]:
         (placement.x, placement.y + placement.width, placement.z),
         (placement.x, placement.y, placement.z + placement.height),
     ]
+
+
+def _extreme_points(
+    placement: BoxPlacement,
+    placements: list[BoxPlacement],
+    problem: ProfilePackingInput,
+) -> list[Point3D]:
+    x, y, z = placement.x, placement.y, placement.z
+    length, width, height = placement.length, placement.width, placement.height
+    raw_points: list[Point3D] = [
+        (x + length, y, z),
+        (x, y + width, z),
+        (x, y, z + height),
+        (x + length, y + width, z),
+        (x + length, y, z + height),
+        (x, y + width, z + height),
+    ]
+    others = [other for other in placements if other is not placement]
+    seen: set[Point3D] = set()
+    points: list[Point3D] = []
+    for point in raw_points:
+        for projected in _project_extreme_point(point, others, problem):
+            if projected in seen:
+                continue
+            seen.add(projected)
+            points.append(projected)
+    return points
+
+
+def _project_extreme_point(
+    point: Point3D,
+    others: list[BoxPlacement],
+    problem: ProfilePackingInput,
+) -> list[Point3D]:
+    projections: list[Point3D] = [point]
+    x, y, z = point
+    pushed_x = _push_negative_x(x, y, z, others)
+    if pushed_x != x:
+        projections.append((pushed_x, y, z))
+    pushed_y = _push_negative_y(x, y, z, others)
+    if pushed_y != y:
+        projections.append((x, pushed_y, z))
+    pushed_z = _push_negative_z(x, y, z, others)
+    if pushed_z != z:
+        projections.append((x, y, pushed_z))
+    return projections
+
+
+def _push_negative_x(x: float, y: float, z: float, placements: list[BoxPlacement]) -> float:
+    best = 0.0
+    for other in placements:
+        right_face = other.x + other.length
+        if right_face > x:
+            continue
+        if not (other.y <= y < other.y + other.width):
+            continue
+        if not (other.z <= z < other.z + other.height):
+            continue
+        if right_face > best:
+            best = right_face
+    return best
+
+
+def _push_negative_y(x: float, y: float, z: float, placements: list[BoxPlacement]) -> float:
+    best = 0.0
+    for other in placements:
+        back_face = other.y + other.width
+        if back_face > y:
+            continue
+        if not (other.x <= x < other.x + other.length):
+            continue
+        if not (other.z <= z < other.z + other.height):
+            continue
+        if back_face > best:
+            best = back_face
+    return best
+
+
+def _push_negative_z(x: float, y: float, z: float, placements: list[BoxPlacement]) -> float:
+    best = 0.0
+    for other in placements:
+        top_face = other.z + other.height
+        if top_face > z:
+            continue
+        if not (other.x <= x < other.x + other.length):
+            continue
+        if not (other.y <= y < other.y + other.width):
+            continue
+        if top_face > best:
+            best = top_face
+    return best
 
 
 def _prune_candidate_points(

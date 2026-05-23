@@ -384,6 +384,52 @@ test_pack_multi_profile_refills_fragmented_space_with_remaining_small_boxes
 
 在 12 个长方体 ULD、50 个大箱加 800 个小箱的测试中，算法可以完成全部 850 个箱子的装载，未装箱为 0。
 
+## 第十版：搜索模式配置
+
+第九次优化把搜索强度做成三种模式，由页面输入并随 `/api/pack` 请求一起提交：
+
+```text
+fast：快速模式，收窄 beam、候选箱型、候选 ULD、候选位置和搜索步数，适合大量 ULD/箱子快速预览。
+balanced：均衡模式，保持原有参数，作为默认值。
+high_utilization：高装载率模式，放宽 beam、候选箱型、候选 ULD、候选位置、候选点和搜索步数，适合小中规模数据追求更高装载率。
+```
+
+模式字段为：
+
+```text
+search_mode = fast | balanced | high_utilization
+```
+
+相关测试是：
+
+```text
+test_global_search_limits_follow_search_mode
+test_visualizer_page_has_projection_views_slice_control_and_selection_details
+test_visualizer_script_contains_projection_and_selection_behaviors
+```
+
+## 第十一版：高装载率模式下的局部重排
+
+第十次优化在高装载率模式收尾阶段加入了一轮 LNS 风格的局部重排，思路是先得到一个较好方案，再把装载率最低的 ULD 顶层箱子拆掉重塞：
+
+```text
+1. 仅在 search_mode == high_utilization 时启用
+2. 按装载率升序挑出最差的非空 ULD
+3. 把该 ULD 中处于最顶层（最大 z 层）的箱子拿出来，放回 remaining_counter
+4. 走一遍 refill，看是否能在已用 ULD 中找到更紧凑的位置
+5. 比对新旧全局分数，更优才接受，否则跳过该 ULD 试下一个
+6. 最多重排 LOCAL_REARRANGE_MAX_PASSES 次（默认 3）
+```
+
+相关测试是：
+
+```text
+test_local_rearrange_is_noop_outside_high_utilization_mode
+test_worst_container_indices_picks_lowest_utilization_and_skips_empties
+test_ruin_and_recreate_strips_top_layer_and_keeps_bottom
+test_pack_multi_profile_high_utilization_does_not_regress
+```
+
 ## 当前算法总结
 
 当前完整策略可以概括为：
@@ -398,6 +444,8 @@ test_pack_multi_profile_refills_fragmented_space_with_remaining_small_boxes
 + 候选点按高度层保留，避免上层堆叠点被裁掉
 + 已用 ULD 优先与剩余小箱补空
 + 堆叠方向优先选择主要支撑面更完整的摆放
++ 三种搜索模式，在速度和装载率之间切换
++ 高装载率模式下对最差 ULD 顶层做局部重排
 ```
 
 它比初版贪心更稳定，但由于 Beam Search 只保留有限数量的状态，仍然不是数学严格最优。
@@ -409,14 +457,14 @@ test_pack_multi_profile_refills_fragmented_space_with_remaining_small_boxes
 ```text
 候选点只来自已放箱子的右侧、后侧、上方
 Beam Search 只保留有限数量的中间方案
-beam_width、候选箱型数、候选 ULD 数、批量推进数量目前是代码常量
+三种搜索模式仍是预设档位，不是自由参数调节
 复杂场景仍可能错过更优组合
 ```
 
 ## 下一步优化方向
 
-下一步可以把 `beam_width`、候选箱型数、候选 ULD 数和批量推进数量做成页面可配置项，让用户在速度和装载率之间自己取舍。
+第十一版已经把"拆顶层重塞"这一类局部重排做掉。下一步可以让局部重排更彻底一些，例如允许跨 ULD 把箱子搬家：把装载率最低的 ULD 完全清空，把它的箱子尝试塞进其他已用 ULD，看能否减少使用的 ULD 数量。
 
-如果继续追求装载率，可以在全局 Beam Search 结果上加 LNS 大邻域搜索。思路是先得到一个较好方案，再反复移除一部分箱子并重新局部装载，直到达到时间预算。
+如果继续追求装载率，可以在全局 Beam Search 结果上加完整版 LNS 大邻域搜索。思路是反复随机移除一批箱子，再重新局部装载，直到达到时间预算。
 
 如果后续需要数学意义上的严格最优解，再考虑 CP-SAT、整数规划或混合求解器方案。
