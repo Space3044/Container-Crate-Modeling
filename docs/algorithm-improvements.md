@@ -430,6 +430,31 @@ test_ruin_and_recreate_strips_top_layer_and_keeps_bottom
 test_pack_multi_profile_high_utilization_does_not_regress
 ```
 
+## 第十二版：高装载率模式下的多排序起点与放宽支撑率
+
+第十一次优化针对不规则截面 ULD（如 Q5 五边形截面）的装载率不足问题。在内部测试中 Q5 容器装 73 个箱子从 8 ULD 压到 7 ULD：
+
+```text
+1. 仅在 search_mode == high_utilization 时启用
+2. pack_multi_profile 走 multistart：跑 4 个 box 评分变体取最优
+   - variant 0：默认（数量多优先，maximize_count）/ 体积大优先（maximize_volume）
+   - variant 1：纯体积大优先
+   - variant 2：长边优先
+   - variant 3：体积 × 数量加权优先
+3. MIN_BOTTOM_SUPPORT_RATIO 按模式区分
+   - fast / balanced：0.8（保守，物流业稳的标准）
+   - high_utilization：0.7（允许 30% 悬空，行业常见值）
+4. _placement_is_valid 和 validate_profile_packing 按 problem.search_mode 取阈值
+5. _profile_input_for_container 传递 search_mode 到子问题，确保多 ULD 流程各阶段一致
+```
+
+相关测试是：
+
+```text
+test_min_support_ratio_relaxes_in_high_utilization_mode
+test_pack_multi_profile_multistart_runs_variants_only_in_high_utilization
+```
+
 ## 当前算法总结
 
 当前完整策略可以概括为：
@@ -446,6 +471,8 @@ test_pack_multi_profile_high_utilization_does_not_regress
 + 堆叠方向优先选择主要支撑面更完整的摆放
 + 三种搜索模式，在速度和装载率之间切换
 + 高装载率模式下对最差 ULD 顶层做局部重排
++ 高装载率模式下 multistart 多 box 排序变体取最优
++ 高装载率模式下放宽底面支撑率到 0.7，允许更紧密堆叠
 ```
 
 它比初版贪心更稳定，但由于 Beam Search 只保留有限数量的状态，仍然不是数学严格最优。
@@ -455,16 +482,29 @@ test_pack_multi_profile_high_utilization_does_not_regress
 当前算法仍有这些限制：
 
 ```text
-候选点只来自已放箱子的右侧、后侧、上方
+候选点只来自已放箱子的右侧、后侧、上方（Extreme Points 投影）
 Beam Search 只保留有限数量的中间方案
 三种搜索模式仍是预设档位，不是自由参数调节
+不规则截面 ULD（如 Q5 五边形）的斜边空间利用率仍不足
 复杂场景仍可能错过更优组合
 ```
 
 ## 下一步优化方向
 
-第十一版已经把"拆顶层重塞"这一类局部重排做掉。下一步可以让局部重排更彻底一些，例如允许跨 ULD 把箱子搬家：把装载率最低的 ULD 完全清空，把它的箱子尝试塞进其他已用 ULD，看能否减少使用的 ULD 数量。
+经过实验验证，当前 Beam Search + Extreme Points 框架的几何能力天花板大约在 62% 装载率（Q5 用例）。继续突破需要更换几何装填器：
 
-如果继续追求装载率，可以在全局 Beam Search 结果上加完整版 LNS 大邻域搜索。思路是反复随机移除一批箱子，再重新局部装载，直到达到时间预算。
+```text
+Maximal Spaces 算法：维护所有空闲长方体空间列表，文献装载率 75-85%
+OR-Tools CP-SAT：声明式约束 + 求解器，效果最稳但依赖重
+专门的 3D bin-packing 启发式：如 Best-Fit Decreasing + Skyline 多次重试
+```
+
+短期内还可以做的小改进：
+
+```text
+放开箱子全 6 朝向旋转（需要业务方确认物流稳定性可接受）
+更精细的候选点投影（如对角方向投影）
+不规则截面 ULD 的"内接矩形分解"预处理
+```
 
 如果后续需要数学意义上的严格最优解，再考虑 CP-SAT、整数规划或混合求解器方案。

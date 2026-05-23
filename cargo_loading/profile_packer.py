@@ -30,6 +30,7 @@ MAX_GLOBAL_CONTAINER_CANDIDATES = 12
 MAX_BATCH_PLACEMENTS = 8
 MAX_GLOBAL_SEARCH_STEPS = 1000
 MIN_BOTTOM_SUPPORT_RATIO = 0.8
+MIN_BOTTOM_SUPPORT_RATIO_HIGH_UTILIZATION = 0.7
 LOCAL_REARRANGE_MAX_PASSES = 3
 LOCAL_REARRANGE_TARGETS_PER_PASS = 1
 
@@ -215,7 +216,35 @@ def _state_signature(state: PackingState) -> tuple[object, ...]:
     return placements + tuple(sorted(state.unloaded_counter.items()))
 
 
+MULTISTART_VARIANTS = (0, 1, 2, 3)
+
+
 def pack_multi_profile(problem: MultiContainerPackingInput) -> MultiContainerPackingResult:
+    if problem.search_mode == SEARCH_MODE_HIGH_UTILIZATION:
+        return _pack_multi_profile_multistart(problem)
+    return _pack_multi_profile_variant(problem, variant=0)
+
+
+def _pack_multi_profile_multistart(problem: MultiContainerPackingInput) -> MultiContainerPackingResult:
+    best_result: MultiContainerPackingResult | None = None
+    best_score: tuple[object, ...] | None = None
+    for variant in MULTISTART_VARIANTS:
+        result = _pack_multi_profile_variant(problem, variant=variant)
+        score = _multi_result_score(result, problem.objective)
+        if best_result is None or score > best_score:
+            best_result = result
+            best_score = score
+    return best_result if best_result is not None else _pack_multi_profile_variant(problem, variant=0)
+
+
+def _multi_result_score(result: MultiContainerPackingResult, objective: str) -> tuple[float, ...]:
+    used_container_count = sum(1 for container in result.containers if container.result.placements)
+    if objective == "maximize_count":
+        return (-result.unloaded_count, -used_container_count, result.loaded_count, result.used_volume)
+    return (-result.unloaded_count, -used_container_count, result.used_volume, result.loaded_count)
+
+
+def _pack_multi_profile_variant(problem: MultiContainerPackingInput, variant: int) -> MultiContainerPackingResult:
     box_by_id = {box.id: box for box in problem.boxes}
     limits = _global_search_limits(problem)
     states = [_initial_global_state(problem)]
@@ -223,7 +252,7 @@ def pack_multi_profile(problem: MultiContainerPackingInput) -> MultiContainerPac
         next_states: list[GlobalPackingState] = []
         expanded_any = False
         for state in states:
-            branches = _global_placement_branches(problem, state, box_by_id, limits)
+            branches = _global_placement_branches(problem, state, box_by_id, limits, variant=variant)
             if branches:
                 expanded_any = True
                 next_states.extend(branches)
@@ -339,11 +368,12 @@ def _global_placement_branches(
     box_by_id: dict[str, BoxSpec],
     limits: SearchLimits | None = None,
     active_only: bool = False,
+    variant: int = 0,
 ) -> list[GlobalPackingState]:
     limits = limits or _global_search_limits(problem)
     branches: list[GlobalPackingState] = []
     tried_box_types = 0
-    for box in _ranked_candidate_box_types(problem, state, box_by_id):
+    for box in _ranked_candidate_box_types(problem, state, box_by_id, variant):
         if tried_box_types >= limits.box_type_candidates and branches:
             break
         tried_box_types += 1
@@ -493,15 +523,17 @@ def _candidate_box_types(
     state: GlobalPackingState,
     box_by_id: dict[str, BoxSpec],
     limits: SearchLimits | None = None,
+    variant: int = 0,
 ) -> list[BoxSpec]:
     limits = limits or _global_search_limits(problem)
-    return _ranked_candidate_box_types(problem, state, box_by_id)[: limits.box_type_candidates]
+    return _ranked_candidate_box_types(problem, state, box_by_id, variant)[: limits.box_type_candidates]
 
 
 def _ranked_candidate_box_types(
     problem: MultiContainerPackingInput,
     state: GlobalPackingState,
     box_by_id: dict[str, BoxSpec],
+    variant: int = 0,
 ) -> list[BoxSpec]:
     boxes = [
         box_by_id[box_id]
@@ -510,15 +542,26 @@ def _ranked_candidate_box_types(
     ]
     return sorted(
         boxes,
-        key=lambda box: _box_type_score(problem, state, box),
+        key=lambda box: _box_type_score(problem, state, box, variant),
         reverse=True,
     )
 
 
-def _box_type_score(problem: MultiContainerPackingInput, state: GlobalPackingState, box: BoxSpec) -> tuple[float, float, int, float]:
+def _box_type_score(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box: BoxSpec,
+    variant: int = 0,
+) -> tuple[float, ...]:
     fit_count = sum(1 for container in state.containers if _box_can_fit_container(box, container.spec))
     remaining_quantity = state.remaining_counter[box.id]
     longest_edge = max(box.length, box.width, box.height)
+    if variant == 1:
+        return (-fit_count, box.volume, remaining_quantity, longest_edge)
+    if variant == 2:
+        return (-fit_count, longest_edge, box.volume, remaining_quantity)
+    if variant == 3:
+        return (-fit_count, box.volume * remaining_quantity, longest_edge, remaining_quantity)
     if problem.objective == "maximize_count":
         return (-fit_count, remaining_quantity, box.volume, longest_edge)
     return (-fit_count, box.volume, remaining_quantity, longest_edge)
@@ -1008,6 +1051,7 @@ def _profile_input_for_container(problem: MultiContainerPackingInput, container_
         ),
         boxes=problem.boxes,
         objective=problem.objective,
+        search_mode=problem.search_mode,
     )
 
 
@@ -1048,7 +1092,7 @@ def validate_profile_packing(problem: ProfilePackingInput, placements: list[BoxP
         ):
             errors.append(f"{placement.instance_id} exceeds ULD cross_section")
         supporters = [existing for existing in placements if existing is not placement]
-        if not _placement_has_enough_support(placement, supporters):
+        if not _placement_has_enough_support(placement, supporters, _min_support_ratio_for_mode(problem.search_mode)):
             errors.append(f"{placement.instance_id} has insufficient bottom support")
 
     for index, first in enumerate(placements):
@@ -1219,7 +1263,7 @@ def _placement_is_valid(problem: ProfilePackingInput, placement: BoxPlacement, p
         return False
     if any(placements_overlap(placement, existing) for existing in placements):
         return False
-    return _placement_has_enough_support(placement, placements)
+    return _placement_has_enough_support(placement, placements, _min_support_ratio_for_mode(problem.search_mode))
 
 
 def _new_candidate_points(placement: BoxPlacement) -> list[Point3D]:
@@ -1403,8 +1447,18 @@ def _point_inside_placement(point: Point3D, placement: BoxPlacement) -> bool:
     )
 
 
-def _placement_has_enough_support(placement: BoxPlacement, placements: list[BoxPlacement]) -> bool:
-    return _support_ratio(placement, placements) >= MIN_BOTTOM_SUPPORT_RATIO
+def _placement_has_enough_support(
+    placement: BoxPlacement,
+    placements: list[BoxPlacement],
+    min_ratio: float = MIN_BOTTOM_SUPPORT_RATIO,
+) -> bool:
+    return _support_ratio(placement, placements) >= min_ratio
+
+
+def _min_support_ratio_for_mode(search_mode: str) -> float:
+    if search_mode == SEARCH_MODE_HIGH_UTILIZATION:
+        return MIN_BOTTOM_SUPPORT_RATIO_HIGH_UTILIZATION
+    return MIN_BOTTOM_SUPPORT_RATIO
 
 
 def _support_ratio(placement: BoxPlacement, placements: list[BoxPlacement]) -> float:

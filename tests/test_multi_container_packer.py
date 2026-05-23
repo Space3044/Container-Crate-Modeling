@@ -5,12 +5,16 @@ from cargo_loading.profile_packer import (
     MAX_BATCH_PLACEMENTS,
     MAX_GLOBAL_BOX_TYPE_CANDIDATES,
     MAX_GLOBAL_CONTAINER_CANDIDATES,
+    MIN_BOTTOM_SUPPORT_RATIO,
+    MIN_BOTTOM_SUPPORT_RATIO_HIGH_UTILIZATION,
     _candidate_box_types,
     _container_candidate_options,
     _global_placement_branches,
     _global_search_limits,
     _initial_global_state,
     _local_rearrange_state,
+    _min_support_ratio_for_mode,
+    _pack_multi_profile_variant,
     _ruin_and_recreate,
     _worst_container_indices,
     pack_multi_profile,
@@ -551,6 +555,37 @@ class MultiContainerPackerTests(unittest.TestCase):
         self.assertGreaterEqual(high_result.used_volume, balanced_result.used_volume)
         self.assertLessEqual(high_result.unloaded_count, balanced_result.unloaded_count)
         self.assertTrue(high_result.validation_passed)
+
+    def test_min_support_ratio_relaxes_in_high_utilization_mode(self):
+        self.assertEqual(_min_support_ratio_for_mode("fast"), MIN_BOTTOM_SUPPORT_RATIO)
+        self.assertEqual(_min_support_ratio_for_mode("balanced"), MIN_BOTTOM_SUPPORT_RATIO)
+        self.assertEqual(_min_support_ratio_for_mode("high_utilization"), MIN_BOTTOM_SUPPORT_RATIO_HIGH_UTILIZATION)
+        self.assertLess(MIN_BOTTOM_SUPPORT_RATIO_HIGH_UTILIZATION, MIN_BOTTOM_SUPPORT_RATIO)
+
+    def test_pack_multi_profile_multistart_runs_variants_only_in_high_utilization(self):
+        containers = [
+            ContainerSpec(
+                id="RECT",
+                length=120,
+                cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+                quantity=2,
+            )
+        ]
+        boxes = [BoxSpec(id="BOX-A", length=40, width=40, height=40, quantity=10)]
+
+        balanced_problem = MultiContainerPackingInput(
+            containers=containers, boxes=boxes, search_mode="balanced"
+        )
+        high_problem = MultiContainerPackingInput(
+            containers=containers, boxes=boxes, search_mode="high_utilization"
+        )
+
+        balanced_result = pack_multi_profile(balanced_problem)
+        high_result = pack_multi_profile(high_problem)
+        variant_0_result = _pack_multi_profile_variant(high_problem, 0)
+
+        self.assertGreaterEqual(high_result.loaded_count, balanced_result.loaded_count)
+        self.assertGreaterEqual(high_result.used_volume, variant_0_result.used_volume)
 
 
 if __name__ == "__main__":
