@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from cargo_loading.profile_geometry import is_convex_polygon
+
 
 class PackingInputError(ValueError):
     """Raised when profile packing input data is invalid."""
@@ -29,6 +31,13 @@ def _valid_search_mode(value: str) -> None:
         raise PackingInputError(f"search_mode must be one of {sorted(VALID_SEARCH_MODES)}")
 
 
+def _valid_cross_section(points: list[Point2D], name: str) -> None:
+    if len(points) < 3:
+        raise PackingInputError(f"{name} must have at least 3 points")
+    if not is_convex_polygon(points):
+        raise PackingInputError(f"{name} must be a convex polygon")
+
+
 @dataclass(frozen=True)
 class ContainerSpec:
     id: str
@@ -39,8 +48,7 @@ class ContainerSpec:
     def __post_init__(self) -> None:
         _non_empty(self.id, "container.id")
         _positive(self.length, "container.length")
-        if len(self.cross_section) < 3:
-            raise PackingInputError("container.cross_section must have at least 3 points")
+        _valid_cross_section(self.cross_section, "container.cross_section")
         if self.quantity < 0:
             raise PackingInputError("container.quantity must be non-negative")
 
@@ -54,8 +62,7 @@ class ULDProfile:
     def __post_init__(self) -> None:
         _non_empty(self.id, "uld.id")
         _positive(self.length, "uld.length")
-        if len(self.cross_section) < 3:
-            raise PackingInputError("uld.cross_section must have at least 3 points")
+        _valid_cross_section(self.cross_section, "uld.cross_section")
 
 
 @dataclass(frozen=True)

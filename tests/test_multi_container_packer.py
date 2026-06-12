@@ -13,6 +13,7 @@ from cargo_loading.profile_packer import (
     _global_search_limits,
     _initial_global_state,
     _local_rearrange_state,
+    _max_volume_combo,
     _min_support_ratio_for_mode,
     _pack_multi_profile_variant,
     _ruin_and_recreate,
@@ -446,7 +447,7 @@ class MultiContainerPackerTests(unittest.TestCase):
         self.assertLess(fast_limits.global_branches_per_state, balanced_limits.global_branches_per_state)
         self.assertGreater(high_limits.beam_width, balanced_limits.beam_width)
         self.assertGreater(high_limits.placement_branches, balanced_limits.placement_branches)
-        self.assertGreater(high_limits.candidate_points, balanced_limits.candidate_points)
+        self.assertGreater(high_limits.max_free_spaces, balanced_limits.max_free_spaces)
 
     def test_local_rearrange_is_noop_outside_high_utilization_mode(self):
         problem = MultiContainerPackingInput(
@@ -586,6 +587,102 @@ class MultiContainerPackerTests(unittest.TestCase):
 
         self.assertGreaterEqual(high_result.loaded_count, balanced_result.loaded_count)
         self.assertGreaterEqual(high_result.used_volume, variant_0_result.used_volume)
+
+    def test_layer_building_reaches_hand_verified_pga_optimum(self):
+        # 现场反例：PGA 五边形截面 + 27 个可旋转 BOX-A。手算最优是
+        # 第一层 12 个（两行 95x114）、第二层 11 个（6+5 混排）、顶层 B 和 C。
+        # 逐箱贪心只能到每层 10 个；层构建必须一步给出混合朝向行组合。
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="PGA",
+                    length=600,
+                    cross_section=[(0, 0), (240, 0), (240, 190), (120, 290), (0, 290)],
+                    quantity=1,
+                )
+            ],
+            boxes=[
+                BoxSpec(id="BOX-A", length=114, width=95, height=102, quantity=27),
+                BoxSpec(id="BOX-B", length=431, width=41, height=33, quantity=1),
+                BoxSpec(id="BOX-C", length=325, width=83, height=42, quantity=1),
+            ],
+            search_mode="fast",
+        )
+
+        result = pack_multi_profile(problem)
+
+        loaded_by_id = {item.box_id: item.quantity for item in result.loaded}
+        self.assertEqual(loaded_by_id, {"BOX-A": 23, "BOX-B": 1, "BOX-C": 1})
+        self.assertEqual(result.unloaded_count, 4)
+        self.assertTrue(result.validation_passed)
+
+    def test_rescue_pass_recovers_constrained_long_box(self):
+        # BOX-B 长 431，只有 PGA 装得下。beam 中途大批量分支会把先装 B 的
+        # 状态挤掉，收尾腾挪必须把 B 救回来，所有箱子全部装载。
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(id="Q7", length=306, cross_section=[(0, 0), (240, 0), (240, 240), (120, 290), (0, 290)], quantity=1),
+                ContainerSpec(id="Q6", length=306, cross_section=[(0, 0), (240, 0), (240, 240), (0, 240)], quantity=1),
+                ContainerSpec(id="L", length=346, cross_section=[(0, 0), (240, 0), (240, 160), (0, 160)], quantity=1),
+                ContainerSpec(id="PGA", length=600, cross_section=[(0, 0), (240, 0), (240, 190), (120, 290), (0, 290)], quantity=1),
+                ContainerSpec(id="Q5", length=306, cross_section=[(0, 0), (240, 0), (240, 190), (120, 290), (0, 290)], quantity=1),
+            ],
+            boxes=[
+                BoxSpec(id="BOX-A", length=114, width=95, height=102, quantity=27),
+                BoxSpec(id="BOX-B", length=431, width=41, height=33, quantity=1),
+                BoxSpec(id="BOX-C", length=325, width=83, height=42, quantity=1),
+                BoxSpec(id="BOX-D", length=133, width=100, height=174, quantity=1),
+                BoxSpec(id="BOX-E", length=125, width=105, height=103, quantity=1),
+            ],
+            search_mode="balanced",
+        )
+
+        result = pack_multi_profile(problem)
+
+        self.assertEqual(result.unloaded_count, 0)
+        used_containers = [container for container in result.containers if container.result.placements]
+        self.assertLessEqual(len(used_containers), 2)
+        self.assertTrue(result.validation_passed)
+
+    def test_max_volume_combo_fills_column_height_exactly(self):
+        # D+D+J 总高 101+101+88 = 290，正好顶满 Q5 截面左侧全高带
+        box_d = BoxSpec(id="BOX-D", length=190, width=98, height=101, quantity=2)
+        box_j = BoxSpec(id="BOX-J", length=108, width=108, height=88, quantity=1)
+
+        combo = _max_volume_combo([(box_d, 190, 98, 2), (box_j, 108, 108, 1)], 290)
+
+        counts = {spec.id: count for spec, _, _, count in combo}
+        self.assertEqual(counts, {"BOX-D": 2, "BOX-J": 1})
+
+    def test_column_building_improves_q5_height_band_case(self):
+        # 现场反例：6 个 Q5 装 12 种箱型共 73 箱。矮箱 A 整层会占满
+        # 截面全高带，高箱无处可叠。立柱墙分支让矮箱让出全高带后，
+        # fast 档从 62 箱提升到 67 箱。
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(id="Q5", length=306, cross_section=[(0, 0), (240, 0), (240, 190), (120, 290), (0, 290)], quantity=6),
+            ],
+            boxes=[
+                BoxSpec(id="BOX-A", length=132, width=114, height=63, quantity=32),
+                BoxSpec(id="BOX-B", length=118, width=98, height=75, quantity=1),
+                BoxSpec(id="BOX-C", length=110, width=120, height=130, quantity=3),
+                BoxSpec(id="BOX-D", length=190, width=98, height=101, quantity=8),
+                BoxSpec(id="BOX-E", length=120, width=100, height=132, quantity=5),
+                BoxSpec(id="BOX-F", length=120, width=84, height=148, quantity=1),
+                BoxSpec(id="BOX-G", length=120, width=80, height=50, quantity=1),
+                BoxSpec(id="BOX-H", length=74, width=64, height=47, quantity=1),
+                BoxSpec(id="BOX-I", length=108, width=108, height=71, quantity=1),
+                BoxSpec(id="BOX-J", length=108, width=108, height=88, quantity=10),
+                BoxSpec(id="BOX-K", length=108, width=108, height=106, quantity=7),
+                BoxSpec(id="BOX-L", length=108, width=108, height=122, quantity=3),
+            ],
+            search_mode="fast",
+        )
+
+        result = pack_multi_profile(problem)
+
+        self.assertGreaterEqual(result.loaded_count, 67)
+        self.assertTrue(result.validation_passed)
 
 
 if __name__ == "__main__":

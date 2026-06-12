@@ -178,7 +178,26 @@ class ProfilePackerTests(unittest.TestCase):
         self.assertEqual([(item.box_id, item.quantity) for item in result.loaded], [("B", 2), ("D", 1)])
         self.assertTrue(result.validation_passed)
 
-    def test_extreme_points_project_back_to_supporting_box_top(self):
+    def test_free_spaces_keep_stacking_space_above_placed_box(self):
+        problem = ProfilePackingInput(
+            uld=ULDProfile(
+                id="ULD-001",
+                length=100,
+                cross_section=[(0, 0), (60, 0), (60, 50), (0, 50)],
+            ),
+            boxes=[],
+        )
+        base = BoxPlacement("BASE", "BASE-001", 0, 0, 0, 40, 40, 20)
+
+        spaces = profile_packer._subtract_placement_from_spaces(
+            profile_packer._initial_free_spaces(problem), base, max_spaces=160
+        )
+
+        self.assertIn(profile_packer.FreeSpace(0, 0, 20, 100, 60, 30), spaces)
+        self.assertIn(profile_packer.FreeSpace(40, 0, 0, 60, 60, 50), spaces)
+        self.assertIn(profile_packer.FreeSpace(0, 40, 0, 100, 20, 50), spaces)
+
+    def test_free_spaces_expose_cavity_above_lower_neighbor(self):
         problem = ProfilePackingInput(
             uld=ULDProfile(
                 id="ULD-001",
@@ -190,27 +209,16 @@ class ProfilePackerTests(unittest.TestCase):
         base = BoxPlacement("BASE", "BASE-001", 0, 0, 0, 40, 40, 20)
         neighbor = BoxPlacement("NEI", "NEI-001", 40, 0, 0, 30, 40, 10)
 
-        points = profile_packer._extreme_points(neighbor, [base, neighbor], problem)
+        spaces = profile_packer._initial_free_spaces(problem)
+        for placement in (base, neighbor):
+            spaces = profile_packer._subtract_placement_from_spaces(spaces, placement, max_spaces=160)
 
-        self.assertIn((40, 0, 10), points)
-        self.assertIn((70, 0, 0), points)
-        self.assertIn((40, 0, 0), points)
-
-    def test_extreme_points_push_top_corner_back_to_lower_neighbor(self):
-        problem = ProfilePackingInput(
-            uld=ULDProfile(
-                id="ULD-001",
-                length=100,
-                cross_section=[(0, 0), (60, 0), (60, 50), (0, 50)],
-            ),
-            boxes=[],
-        )
-        base = BoxPlacement("BASE", "BASE-001", 0, 0, 0, 60, 30, 15)
-        target = BoxPlacement("TGT", "TGT-001", 10, 0, 0, 40, 30, 30)
-
-        points = profile_packer._extreme_points(target, [base, target], problem)
-
-        self.assertIn((10, 0, 15), points)
+        self.assertIn(profile_packer.FreeSpace(40, 0, 10, 60, 60, 40), spaces)
+        self.assertIn(profile_packer.FreeSpace(70, 0, 0, 30, 60, 50), spaces)
+        for first in spaces:
+            for second in spaces:
+                if first is not second:
+                    self.assertFalse(profile_packer._space_contains_space(first, second))
 
 
 if __name__ == "__main__":

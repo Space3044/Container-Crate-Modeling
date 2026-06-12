@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import random
 from collections import Counter
 from dataclasses import dataclass
 
-from cargo_loading.profile_geometry import polygon_area, rectangle_inside_polygon
+from cargo_loading.profile_geometry import convex_y_interval, polygon_area, rectangle_inside_polygon
 from cargo_loading.profile_models import (
     BoxPlacement,
     BoxSpec,
@@ -14,6 +15,7 @@ from cargo_loading.profile_models import (
     MultiContainerPackingResult,
     ProfilePackingInput,
     ProfilePackingResult,
+    SEARCH_MODE_BALANCED,
     SEARCH_MODE_FAST,
     SEARCH_MODE_HIGH_UTILIZATION,
     ULDProfile,
@@ -22,6 +24,7 @@ from cargo_loading.profile_models import (
 
 
 Point3D = tuple[float, float, float]
+EPSILON = 1e-9
 DEFAULT_BEAM_WIDTH = 30
 MAX_PLACEMENT_BRANCHES = 20
 MAX_GLOBAL_BRANCHES_PER_STATE = 80
@@ -33,12 +36,35 @@ MIN_BOTTOM_SUPPORT_RATIO = 0.8
 MIN_BOTTOM_SUPPORT_RATIO_HIGH_UTILIZATION = 0.7
 LOCAL_REARRANGE_MAX_PASSES = 3
 LOCAL_REARRANGE_TARGETS_PER_PASS = 1
+LAYER_BUILD_MIN_QUANTITY = 4
+COLUMN_BUILD_MIN_BOXES = 2
+COLUMN_TOPPER_CANDIDATES = 5
+COLUMN_BUILD_MAX_SPACES = 16
+GRASP_ROUNDS_BALANCED = 2
+GRASP_ROUNDS_HIGH_UTILIZATION = 3
+GRASP_RCL_WINDOW = 3
+
+
+@dataclass(frozen=True)
+class FreeSpace:
+    """容器内一块极大空闲长方体（Empty Maximal Space）。"""
+
+    x: float
+    y: float
+    z: float
+    length: float
+    width: float
+    height: float
+
+    @property
+    def volume(self) -> float:
+        return self.length * self.width * self.height
 
 
 @dataclass
 class PackingState:
     placements: list[BoxPlacement]
-    candidate_points: list[Point3D]
+    free_spaces: list[FreeSpace]
     unloaded_counter: Counter[str]
 
 
@@ -47,7 +73,7 @@ class ContainerState:
     spec: ContainerSpec
     container_id: str
     placements: list[BoxPlacement]
-    candidate_points: list[Point3D]
+    free_spaces: list[FreeSpace]
 
 
 @dataclass
@@ -65,7 +91,7 @@ class SearchLimits:
     global_branches_per_state: int
     batch_placements: int
     max_steps: int
-    candidate_points: int
+    max_free_spaces: int
 
 
 def pack_packing(problem: ProfilePackingInput | MultiContainerPackingInput) -> ProfilePackingResult | MultiContainerPackingResult:
@@ -90,35 +116,38 @@ def _pack_profile_ordered(
     expanded_boxes: list[tuple[BoxSpec, str]],
 ) -> ProfilePackingResult:
     limits = _single_search_limits(problem)
-    states = [PackingState(placements=[], candidate_points=[(0, 0, 0)], unloaded_counter=Counter())]
+    states = [PackingState(placements=[], free_spaces=_initial_free_spaces(problem), unloaded_counter=Counter())]
     for box, instance_id in expanded_boxes:
         next_states: list[PackingState] = []
         for state in states:
-            candidates = _placement_candidates(box, instance_id, problem, state.placements, state.candidate_points)
+            candidates = _placement_candidates(box, instance_id, problem, state.placements, state.free_spaces)
             if not candidates:
                 unloaded_counter = state.unloaded_counter.copy()
                 unloaded_counter[box.id] += 1
                 next_states.append(
                     PackingState(
                         placements=state.placements,
-                        candidate_points=state.candidate_points,
+                        free_spaces=state.free_spaces,
                         unloaded_counter=unloaded_counter,
                     )
                 )
                 continue
             for placement in candidates[: limits.placement_branches]:
                 next_placements = [*state.placements, placement]
-                candidate_points = [*state.candidate_points, *_extreme_points(placement, next_placements, problem)]
                 next_states.append(
                     PackingState(
                         placements=next_placements,
-                        candidate_points=_prune_candidate_points(candidate_points, problem, next_placements),
+                        free_spaces=_subtract_placement_from_spaces(state.free_spaces, placement, _free_space_limit(limits)),
                         unloaded_counter=state.unloaded_counter.copy(),
                     )
                 )
         states = _select_beam_states(problem, next_states, limits.beam_width)
 
-    best_state = max(states, key=lambda state: _state_score(problem, state)) if states else PackingState([], [(0, 0, 0)], Counter())
+    best_state = (
+        max(states, key=lambda state: _state_score(problem, state))
+        if states
+        else PackingState([], _initial_free_spaces(problem), Counter())
+    )
     return _profile_result_from_state(problem, best_state)
 
 
@@ -167,7 +196,7 @@ def _single_search_limits(problem: ProfilePackingInput) -> SearchLimits:
             global_branches_per_state=MAX_GLOBAL_BRANCHES_PER_STATE,
             batch_placements=MAX_BATCH_PLACEMENTS,
             max_steps=MAX_GLOBAL_SEARCH_STEPS,
-            candidate_points=80,
+            max_free_spaces=80,
         ),
         problem.search_mode,
     )
@@ -216,20 +245,38 @@ def _state_signature(state: PackingState) -> tuple[object, ...]:
     return placements + tuple(sorted(state.unloaded_counter.items()))
 
 
-MULTISTART_VARIANTS = (0, 1, 2, 3)
+MULTISTART_VARIANTS = (0, 1, 2, 3, 4)
 
 
 def pack_multi_profile(problem: MultiContainerPackingInput) -> MultiContainerPackingResult:
+    return _best_of_rounds(problem, _round_plan(problem))
+
+
+def _round_plan(problem: MultiContainerPackingInput) -> list[tuple[int, int | None]]:
+    """每轮 = (box 排序变体, GRASP 种子)。种子为 None 表示确定性轮。"""
     if problem.search_mode == SEARCH_MODE_HIGH_UTILIZATION:
-        return _pack_multi_profile_multistart(problem)
-    return _pack_multi_profile_variant(problem, variant=0)
+        container_count = sum(container.quantity for container in problem.containers)
+        box_type_count = len(problem.boxes)
+        if container_count >= 12 or box_type_count >= 20:
+            # 大规模时每轮要几十秒，缩轮数保住分钟级预算
+            return [(0, None), (1, None), (0, 1)]
+        deterministic = [(variant, None) for variant in MULTISTART_VARIANTS]
+        randomized = [(seed % len(MULTISTART_VARIANTS), seed) for seed in range(1, GRASP_ROUNDS_HIGH_UTILIZATION + 1)]
+        return deterministic + randomized
+    if problem.search_mode == SEARCH_MODE_BALANCED:
+        return [(0, None)] + [(0, seed) for seed in range(1, GRASP_ROUNDS_BALANCED + 1)]
+    return [(0, None)]
 
 
-def _pack_multi_profile_multistart(problem: MultiContainerPackingInput) -> MultiContainerPackingResult:
+def _best_of_rounds(
+    problem: MultiContainerPackingInput,
+    rounds: list[tuple[int, int | None]],
+) -> MultiContainerPackingResult:
     best_result: MultiContainerPackingResult | None = None
     best_score: tuple[object, ...] | None = None
-    for variant in MULTISTART_VARIANTS:
-        result = _pack_multi_profile_variant(problem, variant=variant)
+    for variant, seed in rounds:
+        rng = random.Random(seed) if seed is not None else None
+        result = _pack_multi_profile_variant(problem, variant=variant, rng=rng)
         score = _multi_result_score(result, problem.objective)
         if best_result is None or score > best_score:
             best_result = result
@@ -244,7 +291,11 @@ def _multi_result_score(result: MultiContainerPackingResult, objective: str) -> 
     return (-result.unloaded_count, -used_container_count, result.used_volume, result.loaded_count)
 
 
-def _pack_multi_profile_variant(problem: MultiContainerPackingInput, variant: int) -> MultiContainerPackingResult:
+def _pack_multi_profile_variant(
+    problem: MultiContainerPackingInput,
+    variant: int,
+    rng: random.Random | None = None,
+) -> MultiContainerPackingResult:
     box_by_id = {box.id: box for box in problem.boxes}
     limits = _global_search_limits(problem)
     states = [_initial_global_state(problem)]
@@ -252,7 +303,7 @@ def _pack_multi_profile_variant(problem: MultiContainerPackingInput, variant: in
         next_states: list[GlobalPackingState] = []
         expanded_any = False
         for state in states:
-            branches = _global_placement_branches(problem, state, box_by_id, limits, variant=variant)
+            branches = _global_placement_branches(problem, state, box_by_id, limits, variant=variant, rng=rng)
             if branches:
                 expanded_any = True
                 next_states.extend(branches)
@@ -264,6 +315,7 @@ def _pack_multi_profile_variant(problem: MultiContainerPackingInput, variant: in
 
     best_state = max(states, key=lambda state: _global_state_score(problem, state))
     best_state = _refill_remaining_boxes_in_used_containers(problem, best_state, box_by_id, limits)
+    best_state = _rescue_unloaded_boxes(problem, best_state, box_by_id, limits)
     best_state = _local_rearrange_state(problem, best_state, box_by_id, limits)
     return _multi_result_from_global_state(problem, best_state)
 
@@ -275,7 +327,7 @@ def _initial_global_state(problem: MultiContainerPackingInput) -> GlobalPackingS
                 spec=container,
                 container_id=container_id,
                 placements=[],
-                candidate_points=[(0, 0, 0)],
+                free_spaces=_initial_free_spaces_for_spec(container),
             )
             for container, container_id in _expand_containers(problem.containers)
         ],
@@ -300,7 +352,7 @@ def _base_global_search_limits(problem: MultiContainerPackingInput) -> SearchLim
             global_branches_per_state=8,
             batch_placements=30,
             max_steps=200,
-            candidate_points=30,
+            max_free_spaces=30,
         )
     if container_count >= 8 or box_type_count >= 10:
         return SearchLimits(
@@ -311,7 +363,7 @@ def _base_global_search_limits(problem: MultiContainerPackingInput) -> SearchLim
             global_branches_per_state=16,
             batch_placements=16,
             max_steps=300,
-            candidate_points=20,
+            max_free_spaces=20,
         )
     if total_quantity >= 30:
         return SearchLimits(
@@ -322,7 +374,7 @@ def _base_global_search_limits(problem: MultiContainerPackingInput) -> SearchLim
             global_branches_per_state=16,
             batch_placements=16,
             max_steps=300,
-            candidate_points=80,
+            max_free_spaces=80,
         )
     return SearchLimits(
         beam_width=DEFAULT_BEAM_WIDTH,
@@ -332,7 +384,7 @@ def _base_global_search_limits(problem: MultiContainerPackingInput) -> SearchLim
         global_branches_per_state=MAX_GLOBAL_BRANCHES_PER_STATE,
         batch_placements=MAX_BATCH_PLACEMENTS,
         max_steps=MAX_GLOBAL_SEARCH_STEPS,
-        candidate_points=80,
+        max_free_spaces=80,
     )
 
 
@@ -346,7 +398,7 @@ def _search_limits_for_mode(limits: SearchLimits, search_mode: str) -> SearchLim
             global_branches_per_state=max(8, limits.global_branches_per_state // 2),
             batch_placements=max(limits.batch_placements, 12),
             max_steps=max(100, limits.max_steps // 2),
-            candidate_points=max(40, limits.candidate_points // 2),
+            max_free_spaces=max(40, limits.max_free_spaces // 2),
         )
     if search_mode == SEARCH_MODE_HIGH_UTILIZATION:
         return SearchLimits(
@@ -357,7 +409,7 @@ def _search_limits_for_mode(limits: SearchLimits, search_mode: str) -> SearchLim
             global_branches_per_state=max(limits.global_branches_per_state + 1, round(limits.global_branches_per_state * 1.6)),
             batch_placements=limits.batch_placements,
             max_steps=max(limits.max_steps + 1, round(limits.max_steps * 1.5)),
-            candidate_points=max(240, round(limits.candidate_points * 1.8)),
+            max_free_spaces=max(240, round(limits.max_free_spaces * 1.8)),
         )
     return limits
 
@@ -369,18 +421,26 @@ def _global_placement_branches(
     limits: SearchLimits | None = None,
     active_only: bool = False,
     variant: int = 0,
+    rng: random.Random | None = None,
 ) -> list[GlobalPackingState]:
     limits = limits or _global_search_limits(problem)
     branches: list[GlobalPackingState] = []
     tried_box_types = 0
-    for box in _ranked_candidate_box_types(problem, state, box_by_id, variant):
+    column_walls_tried: set[tuple[int, tuple[float, float]]] = set()
+    ranked_box_types = _ranked_candidate_box_types(problem, state, box_by_id, variant)
+    if rng is not None:
+        ranked_box_types = _rcl_order(ranked_box_types, rng)
+    for box in ranked_box_types:
         if tried_box_types >= limits.box_type_candidates and branches:
             break
         tried_box_types += 1
-        for container_index, container_state, profile_input, candidates in _container_candidate_options(problem, state, box, limits, active_only=active_only):
+        for option_index, (container_index, container_state, profile_input, candidates) in enumerate(
+            _container_candidate_options(problem, state, box, limits, active_only=active_only, rng=rng)
+        ):
             quantity = state.remaining_counter[box.id]
             instance_id = f"{box.id}-{box.quantity - quantity + 1:03d}"
-            for placement_index, placement in enumerate(candidates[: limits.placement_branches]):
+            repeated_orientations: set[tuple[float, float]] = set()
+            for placement in candidates[: limits.placement_branches + 1]:
                 single_branch = _place_box_in_global_state(
                     state,
                     container_index,
@@ -391,10 +451,27 @@ def _global_placement_branches(
                     limits,
                 )
                 branches.append(single_branch)
-                if placement_index == 0:
-                    repeated_branch = _repeat_box_in_container(problem, single_branch, container_index, box, limits)
+                orientation = (placement.length, placement.width)
+                if orientation not in repeated_orientations:
+                    repeated_orientations.add(orientation)
+                    repeated_branch = _repeat_box_in_container(
+                        problem,
+                        single_branch,
+                        container_index,
+                        box,
+                        limits,
+                        preferred_orientation=orientation,
+                    )
                     if len(repeated_branch.containers[container_index].placements) > len(single_branch.containers[container_index].placements):
                         branches.append(repeated_branch)
+            layer_branch = _layer_branch_in_container(problem, state, container_index, box, limits)
+            if layer_branch is not None:
+                branches.append(layer_branch)
+            # 立柱墙只在该箱型评分最高的容器里试，控制大规模耗时
+            wall_key = (container_index, _footprint_key(box))
+            if option_index == 0 and wall_key not in column_walls_tried:
+                column_walls_tried.add(wall_key)
+                branches.extend(_column_branch_in_container(problem, state, container_index, box, limits))
     return sorted(
         branches,
         key=lambda branch: _global_state_score(problem, branch),
@@ -408,6 +485,7 @@ def _container_candidate_options(
     box: BoxSpec,
     limits: SearchLimits | None = None,
     active_only: bool = False,
+    rng: random.Random | None = None,
 ) -> list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]]:
     limits = limits or _global_search_limits(problem)
     quantity = state.remaining_counter[box.id]
@@ -418,7 +496,7 @@ def _container_candidate_options(
         for index, container in enumerate(state.containers)
         if container.placements and _box_can_fit_container(box, container.spec) and _container_remaining_volume(container) >= box.volume
     ]
-    active_options = _container_options_from_pool(problem, active_pool, box, instance_id, limits)
+    active_options = _container_options_from_pool(problem, active_pool, box, instance_id, limits, rng=rng)
     if active_options:
         return _sort_container_options(active_options, limits)
     if active_only:
@@ -426,7 +504,7 @@ def _container_candidate_options(
 
     container_pool = _candidate_container_pool(state.containers, box, limits)
     return _sort_container_options(
-        _container_options_from_pool(problem, container_pool, box, instance_id, limits),
+        _container_options_from_pool(problem, container_pool, box, instance_id, limits, rng=rng),
         limits,
     )
 
@@ -437,6 +515,7 @@ def _container_options_from_pool(
     box: BoxSpec,
     instance_id: str,
     limits: SearchLimits,
+    rng: random.Random | None = None,
 ) -> list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]]:
     options: list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]] = []
     for container_index, container_state in container_pool:
@@ -446,11 +525,35 @@ def _container_options_from_pool(
             instance_id,
             profile_input,
             container_state.placements,
-            container_state.candidate_points,
+            container_state.free_spaces,
         )
+        if rng is not None:
+            # 只扰动头部：截断后只用前几个候选，整条列表重排是 O(n^2) 纯浪费
+            head = max(8, limits.placement_branches * 3)
+            candidates = _rcl_order(candidates[:head], rng) + candidates[head:]
         if candidates:
-            options.append((container_index, container_state, profile_input, candidates[: limits.placement_branches]))
+            options.append((container_index, container_state, profile_input, _diverse_orientation_candidates(candidates, limits.placement_branches)))
     return options
+
+
+def _rcl_order(items: list, rng: random.Random, window: int = GRASP_RCL_WINDOW) -> list:
+    """GRASP 受限候选列表：每次从前 window 个里随机挑一个，保持对高分项的偏置。"""
+    pool = list(items)
+    ordered = []
+    while pool:
+        ordered.append(pool.pop(rng.randrange(min(window, len(pool)))))
+    return ordered
+
+
+def _diverse_orientation_candidates(candidates: list[BoxPlacement], limit: int) -> list[BoxPlacement]:
+    """截断候选时保证另一种朝向至少保留一个，避免批量推进只看到单一朝向。"""
+    selected = candidates[:limit]
+    orientations = {(placement.length, placement.width) for placement in selected}
+    for candidate in candidates[limit:]:
+        if (candidate.length, candidate.width) not in orientations:
+            selected = [*selected, candidate]
+            break
+    return selected
 
 
 def _sort_container_options(
@@ -562,6 +665,9 @@ def _box_type_score(
         return (-fit_count, longest_edge, box.volume, remaining_quantity)
     if variant == 3:
         return (-fit_count, box.volume * remaining_quantity, longest_edge, remaining_quantity)
+    if variant == 4:
+        # 高箱优先：先让高箱占住截面全高区，矮箱整层退到斜边下的矮带
+        return (-fit_count, box.height, box.volume, remaining_quantity)
     if problem.objective == "maximize_count":
         return (-fit_count, remaining_quantity, box.volume, longest_edge)
     return (-fit_count, box.volume, remaining_quantity, longest_edge)
@@ -586,6 +692,7 @@ def _repeat_box_in_container(
     container_index: int,
     box: BoxSpec,
     limits: SearchLimits | None = None,
+    preferred_orientation: tuple[float, float] | None = None,
 ) -> GlobalPackingState:
     limits = limits or _global_search_limits(problem)
     current_state = state
@@ -600,21 +707,456 @@ def _repeat_box_in_container(
             instance_id,
             profile_input,
             container_state.placements,
-            container_state.candidate_points,
+            container_state.free_spaces,
         )
         if not candidates:
             break
+        chosen = candidates[0]
+        if preferred_orientation is not None:
+            for candidate in candidates:
+                if (candidate.length, candidate.width) == preferred_orientation:
+                    chosen = candidate
+                    break
         current_state = _place_box_in_global_state(
             current_state,
             container_index,
             container_state,
             profile_input,
             box,
-            candidates[0],
+            chosen,
             limits,
         )
         repeated += 1
     return current_state
+
+
+def _layer_branch_in_container(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    container_index: int,
+    box: BoxSpec,
+    limits: SearchLimits,
+) -> GlobalPackingState | None:
+    """对剩余数量多的箱型，在空闲空间底面铺一整层混合朝向的行组合。
+
+    逐箱贪心会被放置评分的朝向偏好牵着走，整层 6+6、6+5 这类
+    混排组合永远不会出现在分支里。这里直接枚举行组合生成整层放置。
+    """
+    remaining = state.remaining_counter[box.id]
+    if remaining < LAYER_BUILD_MIN_QUANTITY:
+        return None
+    container_state = state.containers[container_index]
+    profile_input = _profile_input_for_container(problem, container_state)
+    best_layout: list[BoxPlacement] | None = None
+    for space in container_state.free_spaces:
+        layout = _layer_layout_in_space(box, space, profile_input, remaining)
+        if len(layout) >= 2 and (best_layout is None or len(layout) > len(best_layout)):
+            best_layout = layout
+    if best_layout is None:
+        return None
+    current_state = state
+    placed = 0
+    for layout_placement in best_layout:
+        container_state = current_state.containers[container_index]
+        quantity = current_state.remaining_counter[box.id]
+        if quantity <= 0:
+            break
+        placement = BoxPlacement(
+            box_id=box.id,
+            instance_id=f"{box.id}-{box.quantity - quantity + 1:03d}",
+            x=layout_placement.x,
+            y=layout_placement.y,
+            z=layout_placement.z,
+            length=layout_placement.length,
+            width=layout_placement.width,
+            height=layout_placement.height,
+        )
+        if not _placement_is_valid(profile_input, placement, container_state.placements):
+            continue
+        current_state = _place_box_in_global_state(
+            current_state,
+            container_index,
+            container_state,
+            profile_input,
+            box,
+            placement,
+            limits,
+        )
+        placed += 1
+    if placed < 2:
+        return None
+    return current_state
+
+
+def _layer_layout_in_space(
+    box: BoxSpec,
+    space: FreeSpace,
+    problem: ProfilePackingInput,
+    max_count: int,
+) -> list[BoxPlacement]:
+    """在单个空闲空间底面上枚举两种朝向的行组合，返回箱数最多的整层摆法。"""
+    if box.height > space.height + EPSILON:
+        return []
+    interval = convex_y_interval(problem.uld.cross_section, space.z, space.z + box.height)
+    if interval is None:
+        return []
+    y_start = max(space.y, interval[0])
+    y_end = min(space.y + space.width, interval[1])
+    x_end = min(space.x + space.length, problem.uld.length)
+    available_width = y_end - y_start
+    available_length = x_end - space.x
+    if available_width <= EPSILON or available_length <= EPSILON:
+        return []
+
+    row_options: list[tuple[float, float, int]] = []
+    for length, width, _height in _orientation_options(box):
+        columns = int((available_length + EPSILON) // length)
+        if columns > 0 and width <= available_width + EPSILON:
+            row_options.append((length, width, columns))
+    if not row_options:
+        return []
+
+    first = row_options[0]
+    second = row_options[1] if len(row_options) > 1 else None
+    best_rows: list[tuple[float, float, int]] | None = None
+    best_key: tuple[int, float] | None = None
+    max_first_rows = int((available_width + EPSILON) // first[1])
+    for first_rows in range(max_first_rows + 1):
+        used_width = first_rows * first[1]
+        second_rows = 0
+        if second is not None:
+            second_rows = int((available_width - used_width + EPSILON) // second[1])
+        count = min(first_rows * first[2] + second_rows * second[2] if second else first_rows * first[2], max_count)
+        key = (count, -(used_width + second_rows * second[1] if second else used_width))
+        if count > 0 and (best_key is None or key > best_key):
+            best_key = key
+            best_rows = [first] * first_rows + ([second] * second_rows if second else [])
+    if best_rows is None:
+        return []
+
+    placements: list[BoxPlacement] = []
+    y = y_start
+    for length, width, columns in sorted(best_rows, key=lambda row: -row[1]):
+        for column in range(columns):
+            if len(placements) >= max_count:
+                return placements
+            placements.append(
+                BoxPlacement(
+                    box_id=box.id,
+                    instance_id="",
+                    x=space.x + column * length,
+                    y=y,
+                    z=space.z,
+                    length=length,
+                    width=width,
+                    height=box.height,
+                )
+            )
+        y += width
+    return placements
+
+
+def _footprint_key(box: BoxSpec) -> tuple[float, float]:
+    return (min(box.length, box.width), max(box.length, box.width))
+
+
+def _cross_section_is_rectangular(cross_section: list[tuple[float, float]]) -> bool:
+    max_y = max(y for y, _ in cross_section)
+    max_z = max(z for _, z in cross_section)
+    return abs(polygon_area(cross_section) - max_y * max_z) <= EPSILON * max(1.0, max_y * max_z)
+
+
+def _topper_orientation(
+    candidate: BoxSpec,
+    length: float,
+    width: float,
+    min_ratio: float,
+) -> tuple[float, float] | None:
+    """箱子作为柱顶压顶箱时使用的朝向；支撑率不达标则不可用。
+
+    允许少量探出立柱底面（如 108 宽箱压在 98 宽的 D 箱顶上），
+    只要按模式支撑率阈值仍然合法。
+    """
+    best: tuple[float, float] | None = None
+    best_overlap = 0.0
+    for option_length, option_width, _height in _orientation_options(candidate):
+        overlap = min(option_length, length) * min(option_width, width)
+        if overlap + EPSILON < option_length * option_width * min_ratio:
+            continue
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best = (option_length, option_width)
+    return best
+
+
+def _column_branch_in_container(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    container_index: int,
+    box: BoxSpec,
+    limits: SearchLimits,
+) -> list[GlobalPackingState]:
+    """同底面箱型族沿高度方向叠立柱墙，柱顶允许一个跨箱型压顶箱。
+
+    层构建只在单一 z 面上铺开，矮箱整层会占满截面全高区，
+    高箱之后无处可叠。立柱分支把底面一致的箱型按高度组合
+    叠到尽量贴近截面顶，柱顶压顶箱补上最后一段（如 D+D 顶上
+    放 J 刚好 202+88=290），让"矮箱让出全高带"的方案进入 beam。
+    纯同族墙和带压顶墙各出一个分支：压顶箱会消耗别的箱型，
+    哪种更优交给 beam 全局评分裁决。
+    """
+    container_state = state.containers[container_index]
+    if _cross_section_is_rectangular(container_state.spec.cross_section):
+        # 矩形截面没有高度带错配，整层构建已经覆盖，避免无谓分支挤占 beam
+        return []
+    family = [
+        candidate
+        for candidate in problem.boxes
+        if state.remaining_counter[candidate.id] > 0 and _footprint_key(candidate) == _footprint_key(box)
+    ]
+    if not family:
+        return []
+    profile_input = _profile_input_for_container(problem, container_state)
+    min_ratio = _min_support_ratio_for_mode(problem.search_mode)
+    min_height = min(candidate.height for candidate in family)
+    branches: list[GlobalPackingState] = []
+    for with_toppers in (False, True):
+        best_layout: list[list[tuple[BoxSpec, BoxPlacement]]] | None = None
+        best_key: tuple[float, int] | None = None
+        used_topper = False
+        for seed_length, seed_width, _height in _orientation_options(box):
+            toppers: list[tuple[BoxSpec, float, float]] = []
+            if with_toppers:
+                for candidate in problem.boxes:
+                    if state.remaining_counter[candidate.id] <= 0 or _footprint_key(candidate) == _footprint_key(box):
+                        continue
+                    orientation = _topper_orientation(candidate, seed_length, seed_width, min_ratio)
+                    if orientation is not None:
+                        toppers.append((candidate, orientation[0], orientation[1]))
+                toppers.sort(key=lambda item: -item[0].volume)
+                del toppers[COLUMN_TOPPER_CANDIDATES:]
+                if not toppers:
+                    continue
+            for space in container_state.free_spaces[:COLUMN_BUILD_MAX_SPACES]:
+                if 2 * min_height > space.height + EPSILON:
+                    continue
+                layout = _column_wall_layout(
+                    family,
+                    toppers,
+                    state.remaining_counter,
+                    space,
+                    seed_length,
+                    seed_width,
+                    profile_input,
+                )
+                if layout is None:
+                    continue
+                key = (
+                    sum(placement.volume for column in layout for _, placement in column),
+                    max(len(column) for column in layout),
+                )
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best_layout = layout
+        if best_layout is None:
+            continue
+        family_ids = {candidate.id for candidate in family}
+        used_topper = any(spec.id not in family_ids for column in best_layout for spec, _ in column)
+        if with_toppers and not used_topper:
+            # 压顶墙退化成纯同族墙时和上一个分支重复
+            continue
+        branch = _apply_column_layout(problem, state, container_index, best_layout, limits)
+        if branch is not None:
+            branches.append(branch)
+    return branches
+
+
+def _apply_column_layout(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    container_index: int,
+    layout: list[list[tuple[BoxSpec, BoxPlacement]]],
+    limits: SearchLimits,
+) -> GlobalPackingState | None:
+    current_state = state
+    placed = 0
+    for column in layout:
+        for spec, layout_placement in column:
+            container_state = current_state.containers[container_index]
+            profile_input = _profile_input_for_container(problem, container_state)
+            quantity = current_state.remaining_counter[spec.id]
+            if quantity <= 0:
+                break
+            placement = BoxPlacement(
+                box_id=spec.id,
+                instance_id=f"{spec.id}-{spec.quantity - quantity + 1:03d}",
+                x=layout_placement.x,
+                y=layout_placement.y,
+                z=layout_placement.z,
+                length=layout_placement.length,
+                width=layout_placement.width,
+                height=layout_placement.height,
+            )
+            if not _placement_is_valid(profile_input, placement, container_state.placements):
+                # 下方箱子没放进去时上方失去支撑，整列从此截断
+                break
+            current_state = _place_box_in_global_state(
+                current_state,
+                container_index,
+                container_state,
+                profile_input,
+                spec,
+                placement,
+                limits,
+            )
+            placed += 1
+    if placed < COLUMN_BUILD_MIN_BOXES:
+        return None
+    return current_state
+
+
+def _column_wall_layout(
+    family: list[BoxSpec],
+    toppers: list[tuple[BoxSpec, float, float]],
+    remaining_counter: Counter,
+    space: FreeSpace,
+    seed_length: float,
+    seed_width: float,
+    problem: ProfilePackingInput,
+) -> list[list[tuple[BoxSpec, BoxPlacement]]] | None:
+    """在单个空闲空间里沿 x 排立柱，每列选总体积最大的同族组合加可选压顶箱。"""
+    min_height = min(spec.height for spec in family)
+    interval = convex_y_interval(problem.uld.cross_section, space.z, space.z + min_height)
+    if interval is None:
+        return None
+    y = max(space.y, interval[0])
+    if y + seed_width > min(space.y + space.width, interval[1]) + EPSILON:
+        return None
+    capacity = _column_capacity(problem.uld.cross_section, y, seed_width, space.z, space.height)
+    if capacity < 2 * min_height - EPSILON:
+        return None
+    columns_limit = int((min(space.length, problem.uld.length - space.x) + EPSILON) // seed_length)
+    if columns_limit <= 0:
+        return None
+    remaining = Counter(
+        {spec.id: remaining_counter[spec.id] for spec in family}
+        | {spec.id: remaining_counter[spec.id] for spec, _, _ in toppers}
+    )
+    layout: list[list[tuple[BoxSpec, BoxPlacement]]] = []
+    tallest_column = 0
+    for index in range(columns_limit):
+        family_types = [(spec, seed_length, seed_width, remaining[spec.id]) for spec in family]
+        best_column: list[tuple[BoxSpec, float, float]] | None = None
+        best_volume = 0.0
+        for topper in [None, *toppers]:
+            topper_height = topper[0].height if topper is not None else 0.0
+            if topper is not None and (remaining[topper[0].id] <= 0 or topper_height > capacity + EPSILON):
+                continue
+            combo = _max_volume_combo(family_types, capacity - topper_height)
+            column_boxes = [(spec, length, width) for spec, length, width, count in combo for _ in range(count)]
+            if topper is not None:
+                if not column_boxes:
+                    continue
+                column_boxes.append(topper)
+            volume = sum(spec.volume for spec, _, _ in column_boxes)
+            if column_boxes and volume > best_volume + EPSILON:
+                best_volume = volume
+                best_column = column_boxes
+        if best_column is None:
+            break
+        x = space.x + index * seed_length
+        z = space.z
+        column: list[tuple[BoxSpec, BoxPlacement]] = []
+        for spec, length, width in best_column:
+            column.append(
+                (
+                    spec,
+                    BoxPlacement(
+                        box_id=spec.id,
+                        instance_id="",
+                        x=x,
+                        y=y,
+                        z=z,
+                        length=length,
+                        width=width,
+                        height=spec.height,
+                    ),
+                )
+            )
+            z += spec.height
+            remaining[spec.id] -= 1
+        layout.append(column)
+        tallest_column = max(tallest_column, len(column))
+    if tallest_column < 2 or sum(len(column) for column in layout) < COLUMN_BUILD_MIN_BOXES:
+        return None
+    return layout
+
+
+def _column_capacity(
+    cross_section: list[tuple[float, float]],
+    y: float,
+    width: float,
+    z: float,
+    max_height: float,
+) -> float:
+    """固定 y 区间后立柱在截面里的最大可用高度，按斜边二分收敛。"""
+
+    def fits(height: float) -> bool:
+        interval = convex_y_interval(cross_section, z, z + height)
+        return interval is not None and y >= interval[0] - EPSILON and y + width <= interval[1] + EPSILON
+
+    if fits(max_height):
+        return max_height
+    low, high = 0.0, max_height
+    for _ in range(32):
+        mid = (low + high) / 2
+        if fits(mid):
+            low = mid
+        else:
+            high = mid
+    return low
+
+
+def _max_volume_combo(
+    types: list[tuple[BoxSpec, float, float, int]],
+    capacity: float,
+) -> list[tuple[BoxSpec, float, float, int]]:
+    """有限数量下的一维装填：枚举各箱型数量组合，总体积最大且总高不超容量。
+
+    按体积/高度密度降序搜索，配合乐观上界剪枝，
+    族内箱型多时也能保持枚举量很小。
+    """
+    ordered = sorted(types, key=lambda item: -(item[0].volume / item[0].height))
+    suffix_density = [0.0] * (len(ordered) + 1)
+    for index in range(len(ordered) - 1, -1, -1):
+        density = ordered[index][0].volume / ordered[index][0].height
+        suffix_density[index] = max(density, suffix_density[index + 1])
+    best_volume = 0.0
+    best_counts = [0] * len(ordered)
+    counts = [0] * len(ordered)
+
+    def search(index: int, total_height: float, total_volume: float) -> None:
+        nonlocal best_volume, best_counts
+        if total_volume > best_volume + EPSILON:
+            best_volume = total_volume
+            best_counts = counts.copy()
+        if index >= len(ordered):
+            return
+        if total_volume + (capacity - total_height) * suffix_density[index] <= best_volume + EPSILON:
+            return
+        spec, _length, _width, available = ordered[index]
+        max_count = min(available, int((capacity - total_height + EPSILON) // spec.height))
+        for count in range(max_count, -1, -1):
+            counts[index] = count
+            search(index + 1, total_height + count * spec.height, total_volume + count * spec.volume)
+        counts[index] = 0
+
+    search(0, 0.0, 0.0)
+    return [
+        (ordered[index][0], ordered[index][1], ordered[index][2], count)
+        for index, count in enumerate(best_counts)
+        if count > 0
+    ]
 
 
 def _refill_remaining_boxes_in_used_containers(
@@ -629,6 +1171,128 @@ def _refill_remaining_boxes_in_used_containers(
         if next_state is None:
             return current_state
         current_state = next_state
+
+
+def _rescue_unloaded_boxes(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+) -> GlobalPackingState:
+    """主搜索结束后，对静态可装却没装上的箱型做定向腾挪。
+
+    强约束箱型（如只有一个 ULD 装得下的超长箱）在 beam 中途会被
+    大批量分支挤出，等轮到它时空间已经碎了。这里腾空目标容器、
+    先放该箱再回填，分数更优才接受。
+    """
+    current_state = state
+    current_score = _global_state_score(problem, current_state)
+    for box_id in sorted(current_state.remaining_counter):
+        if current_state.remaining_counter[box_id] <= 0:
+            continue
+        box = box_by_id[box_id]
+        for container_index, container in enumerate(current_state.containers):
+            if not _box_can_fit_container(box, container.spec):
+                continue
+            candidate = _rescue_box_into_container(problem, current_state, container_index, box, box_by_id, limits)
+            if candidate is None:
+                continue
+            candidate_score = _global_state_score(problem, candidate)
+            if candidate_score > current_score:
+                current_state = candidate
+                current_score = candidate_score
+                break
+    return current_state
+
+
+def _rescue_box_into_container(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    container_index: int,
+    box: BoxSpec,
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+) -> GlobalPackingState | None:
+    """按破坏强度从小到大尝试：先只拆顶层（超长箱常见落点是层顶），再全腾空。"""
+    best_state: GlobalPackingState | None = None
+    best_score: tuple[object, ...] | None = None
+    for ruined in (
+        _strip_container_top_layer(problem, state, container_index, limits),
+        _evacuate_containers(state, [container_index]),
+    ):
+        if ruined is state:
+            continue
+        seeded = _seed_box_in_container(problem, ruined, container_index, box, limits)
+        if seeded is None:
+            continue
+        refilled = _resolve_active_only_beam(problem, seeded, box_by_id, limits)
+        refilled = _refill_remaining_boxes_in_used_containers(problem, refilled, box_by_id, limits)
+        score = _global_state_score(problem, refilled)
+        if best_state is None or score > best_score:
+            best_state = refilled
+            best_score = score
+    return best_state
+
+
+def _strip_container_top_layer(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    container_index: int,
+    limits: SearchLimits,
+) -> GlobalPackingState:
+    container = state.containers[container_index]
+    if not container.placements:
+        return state
+    top_z = max(placement.z for placement in container.placements)
+    if top_z <= 0:
+        return state
+    kept = [placement for placement in container.placements if placement.z < top_z]
+    removed = [placement for placement in container.placements if placement.z >= top_z]
+    if not kept or not removed:
+        return state
+    next_remaining = state.remaining_counter.copy()
+    for placement in removed:
+        next_remaining[placement.box_id] += 1
+    profile_input = _profile_input_for_container(problem, container)
+    next_containers = [*state.containers]
+    next_containers[container_index] = ContainerState(
+        spec=container.spec,
+        container_id=container.container_id,
+        placements=kept,
+        free_spaces=_free_spaces_for_placements(profile_input, kept, limits),
+    )
+    return GlobalPackingState(containers=next_containers, remaining_counter=next_remaining)
+
+
+def _seed_box_in_container(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    container_index: int,
+    box: BoxSpec,
+    limits: SearchLimits,
+) -> GlobalPackingState | None:
+    container_state = state.containers[container_index]
+    profile_input = _profile_input_for_container(problem, container_state)
+    quantity = state.remaining_counter[box.id]
+    instance_id = f"{box.id}-{box.quantity - quantity + 1:03d}"
+    candidates = _placement_candidates(
+        box,
+        instance_id,
+        profile_input,
+        container_state.placements,
+        container_state.free_spaces,
+    )
+    if not candidates:
+        return None
+    return _place_box_in_global_state(
+        state,
+        container_index,
+        container_state,
+        profile_input,
+        box,
+        candidates[0],
+        limits,
+    )
 
 
 def _local_rearrange_state(
@@ -665,6 +1329,16 @@ def _local_rearrange_state(
         tried_signatures,
         _ruin_and_recreate,
         targets_per_pass=LOCAL_REARRANGE_TARGETS_PER_PASS,
+    )
+    best_state, best_score = _run_rearrange_strategy(
+        problem,
+        best_state,
+        best_score,
+        box_by_id,
+        limits,
+        tried_signatures,
+        _repack_and_refill,
+        targets_per_pass=2,
     )
     return best_state
 
@@ -756,7 +1430,7 @@ def _evacuate_containers(
                 spec=container.spec,
                 container_id=container.container_id,
                 placements=[],
-                candidate_points=[(0, 0, 0)],
+                free_spaces=_initial_free_spaces_for_spec(container.spec),
             )
         )
         changed = True
@@ -770,6 +1444,7 @@ def _resolve_active_only_beam(
     state: GlobalPackingState,
     box_by_id: dict[str, BoxSpec],
     limits: SearchLimits,
+    active_only: bool = True,
 ) -> GlobalPackingState:
     remaining_count = sum(quantity for quantity in state.remaining_counter.values() if quantity > 0)
     if remaining_count == 0:
@@ -779,7 +1454,7 @@ def _resolve_active_only_beam(
         next_states: list[GlobalPackingState] = []
         expanded_any = False
         for current in states:
-            branches = _global_placement_branches(problem, current, box_by_id, limits, active_only=True)
+            branches = _global_placement_branches(problem, current, box_by_id, limits, active_only=active_only)
             if branches:
                 expanded_any = True
                 next_states.extend(branches)
@@ -798,40 +1473,32 @@ def _ruin_and_recreate(
     limits: SearchLimits,
     target_indices: list[int],
 ) -> GlobalPackingState:
-    target_set = set(target_indices)
-    next_remaining = state.remaining_counter.copy()
-    next_containers: list[ContainerState] = []
-    changed = False
-    for index, container in enumerate(state.containers):
-        if index not in target_set or not container.placements:
-            next_containers.append(container)
-            continue
-        top_z = max(placement.z for placement in container.placements)
-        if top_z <= 0:
-            next_containers.append(container)
-            continue
-        kept = [placement for placement in container.placements if placement.z < top_z]
-        removed = [placement for placement in container.placements if placement.z >= top_z]
-        if not kept or not removed:
-            next_containers.append(container)
-            continue
-        for placement in removed:
-            next_remaining[placement.box_id] += 1
-        profile_input = _profile_input_for_container(problem, container)
-        new_points = _refill_candidate_points(profile_input, kept, limits)
-        next_containers.append(
-            ContainerState(
-                spec=container.spec,
-                container_id=container.container_id,
-                placements=kept,
-                candidate_points=new_points,
-            )
-        )
-        changed = True
-    if not changed:
+    current_state = state
+    for index in target_indices:
+        current_state = _strip_container_top_layer(problem, current_state, index, limits)
+    if current_state is state:
         return state
-    ruined_state = GlobalPackingState(containers=next_containers, remaining_counter=next_remaining)
-    return _refill_remaining_boxes_in_used_containers(problem, ruined_state, box_by_id, limits)
+    return _refill_remaining_boxes_in_used_containers(problem, current_state, box_by_id, limits)
+
+
+def _repack_and_refill(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+    target_indices: list[int],
+) -> GlobalPackingState:
+    """把最差的几个容器一起腾空，用全量分支联合重装。
+
+    单容器腾挪只能在其余容器的缝隙里找位置，两个装载率都低的
+    容器需要把箱子合并重摆才能腾出整块空间，所以这里允许重新
+    打开被腾空的容器。
+    """
+    evacuated = _evacuate_containers(state, target_indices)
+    if evacuated is state:
+        return state
+    resolved = _resolve_active_only_beam(problem, evacuated, box_by_id, limits, active_only=False)
+    return _refill_remaining_boxes_in_used_containers(problem, resolved, box_by_id, limits)
 
 
 def _next_refill_state(
@@ -880,13 +1547,13 @@ def _best_refill_option(
         if not _box_can_fit_container(box, container_state.spec) or _container_remaining_volume(container_state) < box.volume:
             continue
         profile_input = _profile_input_for_container(problem, container_state)
-        candidate_points = _refill_candidate_points(profile_input, container_state.placements, limits=limits)
+        free_spaces = _free_spaces_for_placements(profile_input, container_state.placements, limits=limits)
         candidates = _placement_candidates(
             box,
             instance_id,
             profile_input,
             container_state.placements,
-            candidate_points,
+            free_spaces,
         )
         if candidates:
             options.append((container_index, container_state, profile_input, candidates[0]))
@@ -895,16 +1562,16 @@ def _best_refill_option(
     return max(options, key=lambda option: _container_option_score(option[1], option[3]))
 
 
-def _refill_candidate_points(
+def _free_spaces_for_placements(
     problem: ProfilePackingInput,
     placements: list[BoxPlacement],
     limits: SearchLimits | None,
-) -> list[Point3D]:
-    points = [(0, 0, 0)]
+) -> list[FreeSpace]:
+    spaces = _initial_free_spaces(problem)
+    max_spaces = _free_space_limit(limits) if limits else 160
     for placement in placements:
-        points.extend(_extreme_points(placement, placements, problem))
-    max_points = _candidate_point_limit(limits) if limits else 160
-    return _prune_candidate_points(points, problem, placements, max_points=max_points)
+        spaces = _subtract_placement_from_spaces(spaces, placement, max_spaces)
+    return spaces
 
 
 def _place_box_in_global_state(
@@ -919,17 +1586,16 @@ def _place_box_in_global_state(
     next_remaining = state.remaining_counter.copy()
     next_remaining[box.id] -= 1
     next_placements = [*container_state.placements, placement]
-    next_candidate_points = _prune_candidate_points(
-        [*container_state.candidate_points, *_extreme_points(placement, next_placements, profile_input)],
-        profile_input,
-        next_placements,
-        max_points=_candidate_point_limit(limits),
+    next_free_spaces = _subtract_placement_from_spaces(
+        container_state.free_spaces,
+        placement,
+        _free_space_limit(limits),
     )
     next_container = ContainerState(
         spec=container_state.spec,
         container_id=container_state.container_id,
         placements=next_placements,
-        candidate_points=next_candidate_points,
+        free_spaces=next_free_spaces,
     )
     next_containers = [*state.containers]
     next_containers[container_index] = next_container
@@ -998,7 +1664,7 @@ def _multi_result_from_global_state(
             _profile_input_for_container(problem, container_state),
             PackingState(
                 placements=container_state.placements,
-                candidate_points=container_state.candidate_points,
+                free_spaces=container_state.free_spaces,
                 unloaded_counter=Counter(),
             ),
         )
@@ -1151,11 +1817,20 @@ def _placement_candidates(
     instance_id: str,
     problem: ProfilePackingInput,
     placements: list[BoxPlacement],
-    candidate_points: list[Point3D],
+    free_spaces: list[FreeSpace],
 ) -> list[BoxPlacement]:
     candidates: list[BoxPlacement] = []
-    for x, y, z in set(candidate_points):
+    seen: set[tuple[float, float, float, float, float, float]] = set()
+    for space in free_spaces:
         for length, width, height in _orientation_options(box):
+            position = _position_in_space(space, length, width, height, problem)
+            if position is None:
+                continue
+            x, y, z = position
+            key = (x, y, z, length, width, height)
+            if key in seen:
+                continue
+            seen.add(key)
             placement = BoxPlacement(
                 box_id=box.id,
                 instance_id=instance_id,
@@ -1169,6 +1844,29 @@ def _placement_candidates(
             if _placement_is_valid(problem, placement, placements):
                 candidates.append(placement)
     return sorted(candidates, key=lambda placement: _placement_score(problem, placements, placement))
+
+
+def _position_in_space(
+    space: FreeSpace,
+    length: float,
+    width: float,
+    height: float,
+    problem: ProfilePackingInput,
+) -> Point3D | None:
+    """箱子放进空闲空间的最小角位置；y 方向沿截面斜边滑入到第一个合法值。"""
+    if length > space.length + EPSILON or height > space.height + EPSILON:
+        return None
+    if space.x + length > problem.uld.length + EPSILON:
+        return None
+    interval = convex_y_interval(problem.uld.cross_section, space.z, space.z + height)
+    if interval is None:
+        return None
+    y_left, y_right = interval
+    y = max(space.y, y_left)
+    y_limit = min(space.y + space.width, y_right)
+    if y + width > y_limit + EPSILON:
+        return None
+    return (space.x, y, space.z)
 
 
 def _placement_score(
@@ -1266,185 +1964,139 @@ def _placement_is_valid(problem: ProfilePackingInput, placement: BoxPlacement, p
     return _placement_has_enough_support(placement, placements, _min_support_ratio_for_mode(problem.search_mode))
 
 
-def _new_candidate_points(placement: BoxPlacement) -> list[Point3D]:
-    return [
-        (placement.x + placement.length, placement.y, placement.z),
-        (placement.x, placement.y + placement.width, placement.z),
-        (placement.x, placement.y, placement.z + placement.height),
-    ]
+def _initial_free_spaces(problem: ProfilePackingInput) -> list[FreeSpace]:
+    return _initial_free_spaces_for_profile(problem.uld.length, problem.uld.cross_section)
 
 
-def _extreme_points(
+def _initial_free_spaces_for_spec(spec: ContainerSpec) -> list[FreeSpace]:
+    return _initial_free_spaces_for_profile(spec.length, spec.cross_section)
+
+
+def _initial_free_spaces_for_profile(length: float, cross_section: list[tuple[float, float]]) -> list[FreeSpace]:
+    max_y = max(y for y, _ in cross_section)
+    max_z = max(z for _, z in cross_section)
+    return [FreeSpace(x=0, y=0, z=0, length=length, width=max_y, height=max_z)]
+
+
+def _subtract_placement_from_spaces(
+    spaces: list[FreeSpace],
     placement: BoxPlacement,
-    placements: list[BoxPlacement],
-    problem: ProfilePackingInput,
-) -> list[Point3D]:
-    x, y, z = placement.x, placement.y, placement.z
-    length, width, height = placement.length, placement.width, placement.height
-    raw_points: list[Point3D] = [
-        (x + length, y, z),
-        (x, y + width, z),
-        (x, y, z + height),
-        (x + length, y + width, z),
-        (x + length, y, z + height),
-        (x, y + width, z + height),
-    ]
-    others = [other for other in placements if other is not placement]
-    seen: set[Point3D] = set()
-    points: list[Point3D] = []
-    for point in raw_points:
-        for projected in _project_extreme_point(point, others, problem):
-            if projected in seen:
-                continue
-            seen.add(projected)
-            points.append(projected)
-    return points
-
-
-def _project_extreme_point(
-    point: Point3D,
-    others: list[BoxPlacement],
-    problem: ProfilePackingInput,
-) -> list[Point3D]:
-    projections: list[Point3D] = [point]
-    x, y, z = point
-    pushed_x = _push_negative_x(x, y, z, others)
-    if pushed_x != x:
-        projections.append((pushed_x, y, z))
-    pushed_y = _push_negative_y(x, y, z, others)
-    if pushed_y != y:
-        projections.append((x, pushed_y, z))
-    pushed_z = _push_negative_z(x, y, z, others)
-    if pushed_z != z:
-        projections.append((x, y, pushed_z))
-    return projections
-
-
-def _push_negative_x(x: float, y: float, z: float, placements: list[BoxPlacement]) -> float:
-    best = 0.0
-    for other in placements:
-        right_face = other.x + other.length
-        if right_face > x:
+    max_spaces: int,
+) -> list[FreeSpace]:
+    """从空闲空间集合中扣掉一个箱子，维持极大空间不互相包含的不变量。"""
+    survivors: list[FreeSpace] = []
+    parts: list[FreeSpace] = []
+    for space in spaces:
+        if _space_intersects_placement(space, placement):
+            parts.extend(_split_space_around_placement(space, placement))
+        else:
+            survivors.append(space)
+    unique_parts: dict[tuple[float, float, float, float, float, float], FreeSpace] = {}
+    for part in parts:
+        unique_parts[(part.x, part.y, part.z, part.length, part.width, part.height)] = part
+    # 体积大的先进，后续小空间若被已留空间包含则丢弃
+    for part in sorted(unique_parts.values(), key=lambda item: -item.volume):
+        if any(_space_contains_space(other, part) for other in survivors):
             continue
-        if not (other.y <= y < other.y + other.width):
-            continue
-        if not (other.z <= z < other.z + other.height):
-            continue
-        if right_face > best:
-            best = right_face
-    return best
+        survivors.append(part)
+    return _cap_free_spaces(survivors, max_spaces)
 
 
-def _push_negative_y(x: float, y: float, z: float, placements: list[BoxPlacement]) -> float:
-    best = 0.0
-    for other in placements:
-        back_face = other.y + other.width
-        if back_face > y:
-            continue
-        if not (other.x <= x < other.x + other.length):
-            continue
-        if not (other.z <= z < other.z + other.height):
-            continue
-        if back_face > best:
-            best = back_face
-    return best
+def _space_intersects_placement(space: FreeSpace, placement: BoxPlacement) -> bool:
+    return (
+        space.x + space.length > placement.x + EPSILON
+        and placement.x + placement.length > space.x + EPSILON
+        and space.y + space.width > placement.y + EPSILON
+        and placement.y + placement.width > space.y + EPSILON
+        and space.z + space.height > placement.z + EPSILON
+        and placement.z + placement.height > space.z + EPSILON
+    )
 
 
-def _push_negative_z(x: float, y: float, z: float, placements: list[BoxPlacement]) -> float:
-    best = 0.0
-    for other in placements:
-        top_face = other.z + other.height
-        if top_face > z:
-            continue
-        if not (other.x <= x < other.x + other.length):
-            continue
-        if not (other.y <= y < other.y + other.width):
-            continue
-        if top_face > best:
-            best = top_face
-    return best
+def _split_space_around_placement(space: FreeSpace, placement: BoxPlacement) -> list[FreeSpace]:
+    parts: list[FreeSpace] = []
+    if placement.x - space.x > EPSILON:
+        parts.append(FreeSpace(space.x, space.y, space.z, placement.x - space.x, space.width, space.height))
+    right = placement.x + placement.length
+    if space.x + space.length - right > EPSILON:
+        parts.append(FreeSpace(right, space.y, space.z, space.x + space.length - right, space.width, space.height))
+    if placement.y - space.y > EPSILON:
+        parts.append(FreeSpace(space.x, space.y, space.z, space.length, placement.y - space.y, space.height))
+    back = placement.y + placement.width
+    if space.y + space.width - back > EPSILON:
+        parts.append(FreeSpace(space.x, back, space.z, space.length, space.y + space.width - back, space.height))
+    if placement.z - space.z > EPSILON:
+        parts.append(FreeSpace(space.x, space.y, space.z, space.length, space.width, placement.z - space.z))
+    top = placement.z + placement.height
+    if space.z + space.height - top > EPSILON:
+        parts.append(FreeSpace(space.x, space.y, top, space.length, space.width, space.z + space.height - top))
+    return parts
 
 
-def _prune_candidate_points(
-    candidate_points: list[Point3D],
-    problem: ProfilePackingInput,
-    placements: list[BoxPlacement] | None = None,
-    max_points: int | None = None,
-) -> list[Point3D]:
-    points = []
-    placements = placements or []
-    for point in set(candidate_points):
-        x, y, z = point
-        if any(_point_inside_placement(point, placement) for placement in placements):
-            continue
-        if x <= problem.uld.length and rectangle_inside_polygon(
-            y=y,
-            z=z,
-            width=0,
-            height=0,
-            polygon=problem.uld.cross_section,
-        ):
-            points.append(point)
-    sorted_points = sorted(points, key=_candidate_point_sort_key)
-    if max_points is None or len(sorted_points) <= max_points:
-        return sorted_points
-    return _select_diverse_candidate_points(sorted_points, max_points)
+def _space_contains_space(outer: FreeSpace, inner: FreeSpace) -> bool:
+    return (
+        outer.x <= inner.x + EPSILON
+        and outer.y <= inner.y + EPSILON
+        and outer.z <= inner.z + EPSILON
+        and outer.x + outer.length >= inner.x + inner.length - EPSILON
+        and outer.y + outer.width >= inner.y + inner.width - EPSILON
+        and outer.z + outer.height >= inner.z + inner.height - EPSILON
+    )
 
 
-def _candidate_point_sort_key(point: Point3D) -> tuple[float, float, float]:
-    return (point[2], point[1], point[0])
+def _cap_free_spaces(spaces: list[FreeSpace], max_spaces: int) -> list[FreeSpace]:
+    sorted_spaces = sorted(spaces, key=_free_space_sort_key)
+    if len(sorted_spaces) <= max_spaces:
+        return sorted_spaces
+    return _select_diverse_free_spaces(sorted_spaces, max_spaces)
 
 
-def _select_diverse_candidate_points(sorted_points: list[Point3D], max_points: int) -> list[Point3D]:
-    if max_points <= 0:
+def _free_space_sort_key(space: FreeSpace) -> tuple[float, float, float, float]:
+    return (space.z, space.y, space.x, -space.volume)
+
+
+def _select_diverse_free_spaces(sorted_spaces: list[FreeSpace], max_spaces: int) -> list[FreeSpace]:
+    """先保留低层空间，再按高度层轮流保留，避免上层堆叠空间被裁掉。"""
+    if max_spaces <= 0:
         return []
 
-    selected: list[Point3D] = []
-    seen: set[Point3D] = set()
+    selected: list[FreeSpace] = []
+    seen: set[int] = set()
 
-    floor_quota = max(1, max_points // 3)
-    for point in sorted_points[:floor_quota]:
-        selected.append(point)
-        seen.add(point)
+    floor_quota = max(1, max_spaces // 3)
+    for space in sorted_spaces[:floor_quota]:
+        selected.append(space)
+        seen.add(id(space))
 
-    layers: dict[float, list[Point3D]] = {}
-    for point in sorted_points:
-        layers.setdefault(point[2], []).append(point)
+    layers: dict[float, list[FreeSpace]] = {}
+    for space in sorted_spaces:
+        layers.setdefault(space.z, []).append(space)
 
     layer_index = 0
     layer_heights = sorted(layers)
-    while len(selected) < max_points:
+    while len(selected) < max_spaces:
         progressed = False
         for height in layer_heights:
             layer = layers[height]
             if layer_index >= len(layer):
                 continue
             progressed = True
-            point = layer[layer_index]
-            if point in seen:
+            space = layer[layer_index]
+            if id(space) in seen:
                 continue
-            selected.append(point)
-            seen.add(point)
-            if len(selected) >= max_points:
+            selected.append(space)
+            seen.add(id(space))
+            if len(selected) >= max_spaces:
                 break
         if not progressed:
             break
         layer_index += 1
 
-    return sorted(selected, key=_candidate_point_sort_key)
+    return sorted(selected, key=_free_space_sort_key)
 
 
-def _candidate_point_limit(limits: SearchLimits) -> int:
-    return max(160, limits.candidate_points)
-
-
-def _point_inside_placement(point: Point3D, placement: BoxPlacement) -> bool:
-    x, y, z = point
-    return (
-        placement.x <= x < placement.x + placement.length
-        and placement.y <= y < placement.y + placement.width
-        and placement.z <= z < placement.z + placement.height
-    )
+def _free_space_limit(limits: SearchLimits) -> int:
+    return max(160, limits.max_free_spaces)
 
 
 def _placement_has_enough_support(
