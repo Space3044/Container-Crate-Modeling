@@ -3,7 +3,7 @@ const fallbackInput = {
     {
       id: "Q7",
       length: 306,
-      quantity: 1,
+      quantity: 0,
       cross_section: [
         [0, 0],
         [240, 0],
@@ -15,7 +15,7 @@ const fallbackInput = {
     {
       id: "Q6",
       length: 306,
-      quantity: 1,
+      quantity: 0,
       cross_section: [
         [0, 0],
         [240, 0],
@@ -26,7 +26,7 @@ const fallbackInput = {
     {
       id: "L",
       length: 346,
-      quantity: 1,
+      quantity: 0,
       cross_section: [
         [0, 0],
         [240, 0],
@@ -37,7 +37,7 @@ const fallbackInput = {
     {
       id: "PGA",
       length: 600,
-      quantity: 1,
+      quantity: 0,
       cross_section: [
         [0, 0],
         [240, 0],
@@ -49,7 +49,7 @@ const fallbackInput = {
     {
       id: "Q5",
       length: 306,
-      quantity: 1,
+      quantity: 0,
       cross_section: [
         [0, 0],
         [240, 0],
@@ -294,7 +294,7 @@ function normalizeInput(input) {
       containers: input.containers.map((container) => ({
         id: String(container.id ?? "ULD"),
         length: Number(container.length),
-        quantity: Number(container.quantity ?? 1),
+        quantity: Number(container.quantity ?? 0),
         cross_section: container.cross_section.map(([y, z]) => [Number(y), Number(z)]),
       })),
       boxes: input.boxes ?? [],
@@ -308,7 +308,7 @@ function normalizeInput(input) {
         {
           id: input.uld.id,
           length: input.uld.length,
-          quantity: 1,
+          quantity: 0,
           cross_section: input.uld.cross_section,
         },
       ],
@@ -333,7 +333,7 @@ function addContainerRow(container = {}) {
   row.innerHTML = `
     <td><input class="container-id" type="text" value="${escapeAttribute(id)}" aria-label="ULD ID" /></td>
     <td><input class="container-length" type="number" min="1" step="1" value="${container.length ?? 300}" aria-label="ULD 长度" /></td>
-    <td><input class="container-quantity" type="number" min="0" step="1" value="${container.quantity ?? 1}" aria-label="ULD 数量" /></td>
+    <td><input class="container-quantity" type="number" min="0" step="1" value="${container.quantity ?? 0}" aria-label="ULD 数量" /></td>
     <td><textarea class="container-cross-section" rows="3" aria-label="ULD y-z 截面点">${escapeHtml(JSON.stringify(crossSection))}</textarea></td>
     <td><button class="icon-button" type="button" aria-label="删除 ULD">×</button></td>
   `;
@@ -407,14 +407,14 @@ function exportExcel() {
     if (!state.result) {
       throw new Error("请先计算装箱结果后再导出 Excel");
     }
-    downloadExcelWorkbook(buildExcelWorkbook(state.result), buildExcelFileName(state.result, currentExportCreatedAt()));
+    downloadExcelWorkbook(buildExcelWorkbook(state.result, state.input), buildExcelFileName(state.result, currentExportCreatedAt()));
   } catch (error) {
     showError(error.message);
   }
 }
 
-function buildExcelWorkbook(result) {
-  return buildXlsxWorkbook(buildWorkbookSheets(result));
+function buildExcelWorkbook(result, input = null) {
+  return buildXlsxWorkbook(buildWorkbookSheets(result, input));
 }
 
 function buildExcelFileName(result, createdAt) {
@@ -444,12 +444,13 @@ function formatExportUtilization(value) {
   return `${(Number(value ?? 0) * 100).toFixed(2)}%`;
 }
 
-function buildWorkbookSheets(result) {
+function buildWorkbookSheets(result, input = null) {
   const containers = resultContainersForExport(result);
   const placements = allPlacementsForExport(containers);
   const loaded = result.loaded ?? loadedSummaryFromPlacements(placements);
   const unloaded = result.unloaded ?? [];
   const validationErrors = result.validation_errors?.length ? result.validation_errors.join("；") : "";
+  const exportInput = input ? normalizeInput(input) : { containers: [], boxes: [] };
 
   return [
     {
@@ -485,6 +486,34 @@ function buildWorkbookSheets(result) {
         }),
       ],
       widths: [18, 14, 12, 12, 14, 16, 16, 12],
+    },
+    {
+      name: "ULD 数据",
+      rows: [
+        ["ULD ID", "长度", "数量", "截面"],
+        ...exportInput.containers.map((container) => [
+          container.id,
+          Number(container.length),
+          Number(container.quantity ?? 0),
+          JSON.stringify(container.cross_section ?? []),
+        ]),
+      ],
+      widths: [18, 12, 12, 48],
+    },
+    {
+      name: "箱子数据",
+      rows: [
+        ["箱子 ID", "长", "宽", "高", "数量", "长宽互换"],
+        ...(exportInput.boxes ?? []).map((box) => [
+          box.id ?? "",
+          Number(box.length),
+          Number(box.width),
+          Number(box.height),
+          Number(box.quantity ?? 0),
+          box.rotatable ?? true ? "是" : "否",
+        ]),
+      ],
+      widths: [22, 12, 12, 12, 12, 14],
     },
     {
       name: "已装箱类型",

@@ -197,7 +197,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("quantity: readNonNegativeInteger(quantity", script)
         self.assertIn("exportExcelButton.addEventListener", script)
         self.assertIn("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", script)
-        self.assertIn("downloadExcelWorkbook(buildExcelWorkbook(state.result), buildExcelFileName(state.result, currentExportCreatedAt()))", script)
+        self.assertIn("downloadExcelWorkbook(buildExcelWorkbook(state.result, state.input), buildExcelFileName(state.result, currentExportCreatedAt()))", script)
         self.assertIn("装载率", script)
         self.assertIn("selectedHistoryId", script)
         self.assertIn(".xlsx", script)
@@ -329,7 +329,7 @@ if (JSON.stringify(boxes) !== JSON.stringify(expected)) {
         self.assertIn("box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.68)", css)
         self.assertIn("background: linear-gradient(160deg, #040813 0%, #071426 52%, #01040a 100%)", css)
 
-    def test_visualizer_defaults_to_field_uld_rows_and_no_sample_box(self):
+    def test_visualizer_defaults_to_field_uld_rows_with_zero_quantities_and_no_sample_box(self):
         script = Path("web/app.js").read_text(encoding="utf-8")
         sample = json.loads(Path("data/profile_packing_input.json").read_text(encoding="utf-8"))
         expected_containers = [
@@ -353,10 +353,144 @@ if (JSON.stringify(boxes) !== JSON.stringify(expected)) {
             [(container["id"], container["length"], container["cross_section"]) for container in sample["containers"]],
             expected_containers,
         )
-        self.assertTrue(all(isinstance(container["quantity"], int) and container["quantity"] >= 0 for container in sample["containers"]))
+        self.assertTrue(all(container["quantity"] == 0 for container in sample["containers"]))
         self.assertIn('class="container-quantity" type="number" min="0"', script)
+        self.assertIn('value="${container.quantity ?? 0}"', script)
         self.assertIn("readNonNegativeInteger(row.querySelector(\".container-quantity\").value", script)
         self.assertEqual(sample["boxes"], [])
+
+    def test_visualizer_normalizes_initial_uld_quantities_to_zero(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const fallback = context.normalizeInput({});
+const multi = context.normalizeInput({
+  containers: [{ id: "ULD-X", length: 100, cross_section: [[0, 0], [10, 0], [10, 10]] }],
+  boxes: [],
+});
+const legacy = context.normalizeInput({
+  uld: { id: "ULD-L", length: 100, cross_section: [[0, 0], [10, 0], [10, 10]] },
+  boxes: [],
+});
+
+const quantities = [
+  ...fallback.containers.map((container) => container.quantity),
+  multi.containers[0].quantity,
+  legacy.containers[0].quantity,
+];
+if (!quantities.every((quantity) => quantity === 0)) {
+  throw new Error(`unexpected default quantities: ${JSON.stringify(quantities)}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_excel_export_includes_input_uld_and_box_data(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const input = {
+  containers: [
+    {
+      id: "Q7",
+      length: 306,
+      quantity: 2,
+      cross_section: [[0, 0], [240, 0], [240, 240], [120, 290], [0, 290]],
+    },
+  ],
+  boxes: [
+    { id: "BOX-A", length: 60, width: 40, height: 30, quantity: 5, rotatable: false },
+  ],
+  objective: "maximize_volume",
+  search_mode: "balanced",
+};
+const result = {
+  loaded_count: 1,
+  unloaded_count: 0,
+  used_volume: 72000,
+  container_volume: 1000000,
+  volume_utilization: 0.072,
+  loaded: [{ box_id: "BOX-A", quantity: 1 }],
+  unloaded: [],
+  validation_passed: true,
+  validation_errors: [],
+  containers: [
+    {
+      container_id: "Q7-001",
+      container_type: "Q7",
+      loaded_count: 1,
+      unloaded_count: 0,
+      used_volume: 72000,
+      uld_volume: 1000000,
+      volume_utilization: 0.072,
+      validation_passed: true,
+      placements: [
+        { box_id: "BOX-A", instance_id: "BOX-A-001", x: 0, y: 0, z: 0, length: 60, width: 40, height: 30 },
+      ],
+    },
+  ],
+};
+
+const sheets = context.buildWorkbookSheets(result, input);
+const sheetByName = new Map(sheets.map((sheet) => [sheet.name, sheet]));
+const uldRows = sheetByName.get("ULD 数据")?.rows;
+const boxRows = sheetByName.get("箱子数据")?.rows;
+const expectedCrossSection = JSON.stringify(input.containers[0].cross_section);
+const uldRow = uldRows?.[1] ?? [];
+const boxRow = boxRows?.[1] ?? [];
+
+if (!uldRows || !boxRows) {
+  throw new Error(`missing input sheets: ${sheets.map((sheet) => sheet.name).join(",")}`);
+}
+if (JSON.stringify(uldRows[0]) !== JSON.stringify(["ULD ID", "长度", "数量", "截面"])) {
+  throw new Error(`unexpected ULD header: ${JSON.stringify(uldRows[0])}`);
+}
+if (uldRow[0] !== "Q7" || uldRow[1] !== 306 || uldRow[2] !== 2 || uldRow[3] !== expectedCrossSection) {
+  throw new Error(`unexpected ULD row: ${JSON.stringify(uldRow)}`);
+}
+if (JSON.stringify(boxRows[0]) !== JSON.stringify(["箱子 ID", "长", "宽", "高", "数量", "长宽互换"])) {
+  throw new Error(`unexpected box header: ${JSON.stringify(boxRows[0])}`);
+}
+if (boxRow[0] !== "BOX-A" || boxRow[1] !== 60 || boxRow[2] !== 40 || boxRow[3] !== 30 || boxRow[4] !== 5 || boxRow[5] !== "否") {
+  throw new Error(`unexpected box row: ${JSON.stringify(boxRow)}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
 
 
 if __name__ == "__main__":
