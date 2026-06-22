@@ -56,10 +56,17 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn('class="section-card"', html)
         self.assertIn('class="result-section"', html)
         self.assertIn('class="viewer-copy"', html)
+        self.assertIn('class="viewer-body"', html)
+        self.assertLess(html.index('class="slice-control"'), html.index('class="viewer-body"'))
         self.assertNotIn('class="input-toolbar"', html)
         self.assertNotIn('class="input-actions"', html)
         self.assertNotIn("<h1>ULD 装箱可视化</h1>", html)
         self.assertIn("当前 ULD", html)
+        self.assertIn('class="result-section detail-current"', html)
+        self.assertIn('class="result-section detail-loaded"', html)
+        self.assertIn('class="result-section detail-unloaded"', html)
+        self.assertIn('class="result-section detail-selected"', html)
+        self.assertIn('class="result-section detail-placements"', html)
         self.assertIn("最近10次计算记录", html)
         self.assertIn("装箱动画", html)
         self.assertIn("播放动画", html)
@@ -329,14 +336,36 @@ if (tableBody.innerHTML !== "") {
         self.assertIn("--result-panel-height: calc(var(--history-list-height) + 360px)", css)
         self.assertIn("--input-panel-height: var(--result-panel-height)", css)
         self.assertIn("--history-list-height: 592px", css)
+        self.assertIn("--details-summary-row-height: 212px", css)
         self.assertIn("--scene-min-height: clamp(560px, 58vh, 760px)", css)
         self.assertIn("minmax(520px, 1.3fr) minmax(480px, 1.15fr) minmax(320px, 0.85fr)", css)
         self.assertIn("minmax(620px, 1.15fr) minmax(580px, 1.4fr) minmax(380px, 0.8fr)", css)
-        self.assertIn("grid-template-rows: auto minmax(var(--scene-min-height), 1fr) auto auto", css)
-        self.assertIn("height: var(--projection-height)", css)
+        self.assertIn('"uld boxes overview"\n    "details details details"\n    "viewer viewer viewer"', css)
+        self.assertIn('grid-template-columns: minmax(240px, 1fr) minmax(180px, 0.78fr) minmax(220px, 0.92fr)', css)
+        self.assertIn("grid-template-rows: auto var(--details-summary-row-height) minmax(0, 1fr)", css)
+        self.assertIn("height: var(--input-panel-height)", css)
+        self.assertIn(".result-details > .panel-title {\n  grid-column: 1 / -1;", css)
+        self.assertIn(".detail-current {\n  grid-column: 1;", css)
+        self.assertIn(".detail-current {\n  grid-column: 1;\n  grid-row: 2;", css)
+        self.assertIn(".detail-loaded {\n  grid-column: 1;", css)
+        self.assertIn(".detail-loaded {\n  grid-column: 1;\n  grid-row: 3;", css)
+        self.assertIn(".detail-placements {\n  grid-column: 2 / -1;\n  grid-row: 3;", css)
+        self.assertIn(".result-details .result-list,\n.result-details .selected-box-card,\n.result-details .placements-scroll", css)
+        self.assertIn(".container-selector-label {\n  grid-template-columns: auto minmax(0, 1fr);", css)
+        self.assertIn(".container-selector-label select {\n  height: 36px;", css)
+        self.assertIn(".active-container-stats {\n  display: grid;\n  gap: 0;\n  margin-top: 0;", css)
+        self.assertIn("grid-template-rows: auto minmax(var(--scene-min-height), 1fr)", css)
+        self.assertIn(".viewer-body", css)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) minmax(280px, 340px)", css)
+        self.assertIn(".projection-grid {\n  display: grid;\n  grid-template-columns: 1fr;", css)
+        self.assertIn("grid-template-rows: repeat(3, minmax(0, 1fr))", css)
+        self.assertIn(".projection-card {\n  display: grid;\n  grid-template-rows: auto minmax(0, 1fr)", css)
+        self.assertIn(".projection-card canvas {\n  height: 100%;", css)
         self.assertIn("@media (min-width: 2200px)", css)
         self.assertIn("@media (max-width: 1599px)", css)
         self.assertIn('\"uld boxes\"', css)
+        self.assertIn('\"overview overview\"', css)
+        self.assertIn('\"details details\"', css)
         self.assertIn('\"viewer viewer\"', css)
         self.assertIn("@media (max-width: 1100px)", css)
         self.assertIn("@media (max-width: 900px)", css)
@@ -356,9 +385,9 @@ if (tableBody.innerHTML !== "") {
         self.assertNotIn("--input-panel-height: clamp(", css)
         self.assertNotIn(".result-overview {\n    height: auto;", css)
         self.assertNotIn(".result-overview,\n  .result-details {\n    height: auto;", css)
-        self.assertIn("max-height: calc(100vh - 112px)", css)
+        self.assertNotIn("max-height: calc(100vh - 112px)", css)
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)
-        self.assertIn("position: sticky", css)
+        self.assertNotIn(".result-details {\n  display: grid;\n  gap: 14px;\n  align-content: start;\n  position: sticky", css)
         self.assertIn("pointer-events: none", css)
         self.assertIn("border: 1px solid rgba(226, 232, 240, 0.28)", css)
         self.assertIn("box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.68)", css)
@@ -425,6 +454,193 @@ const quantities = [
 ];
 if (!quantities.every((quantity) => quantity === 0)) {
   throw new Error(`unexpected default quantities: ${JSON.stringify(quantities)}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_active_container_stats_keeps_default_metric_placeholders(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const html = context.activeContainerStatsMarkup(null);
+for (const expected of [
+  "<span>单个 ULD 装载率</span><strong>--</strong>",
+  "<span>已装箱</span><strong>--</strong>",
+  "<span>已用体积</span><strong>-- / --</strong>",
+]) {
+  if (!html.includes(expected)) {
+    throw new Error(`missing placeholder row ${expected}: ${html}`);
+  }
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_loaded_list_markup_includes_box_dimensions(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const html = context.loadedListMarkup(
+  {
+    loaded: [
+      { box_id: "BOX-A", quantity: 2 },
+      { box_id: "BOX-B", quantity: 1, length: 90, width: 50, height: 40 },
+    ],
+  },
+  {
+    boxes: [
+      { id: "BOX-A", length: 60, width: 40, height: 30 },
+      { id: "BOX-B", length: 80, width: 45, height: 35 },
+    ],
+  },
+);
+
+for (const expected of [
+  "BOX-A (60 × 40 × 30) × 2",
+  "BOX-B (90 × 50 × 40) × 1",
+]) {
+  if (!html.includes(expected)) {
+    throw new Error(`missing loaded dimension row ${expected}: ${html}`);
+  }
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_unloaded_list_markup_includes_box_dimensions(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const html = context.unloadedListMarkup(
+  {
+    unloaded: [
+      { box_id: "BOX-A", quantity: 3, reason: "超出空间" },
+      { box_id: "BOX-B", quantity: 1, reason: "未匹配", length: 90, width: 50, height: 40 },
+    ],
+  },
+  {
+    boxes: [
+      { id: "BOX-A", length: 60, width: 40, height: 30 },
+      { id: "BOX-B", length: 80, width: 45, height: 35 },
+    ],
+  },
+);
+
+for (const expected of [
+  "BOX-A (60 × 40 × 30) × 3：超出空间",
+  "BOX-B (90 × 50 × 40) × 1：未匹配",
+]) {
+  if (!html.includes(expected)) {
+    throw new Error(`missing unloaded dimension row ${expected}: ${html}`);
+  }
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_active_container_details_renders_loaded_types_for_selected_uld(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+vm.runInContext(`
+const classList = { add: () => {}, remove: () => {} };
+state.input = {
+  boxes: [
+    { id: "BOX-A", length: 60, width: 40, height: 30 },
+    { id: "BOX-B", length: 80, width: 50, height: 40 },
+  ],
+};
+state.result = {
+  containers: [
+    { container_id: "ULD-1", loaded: [{ box_id: "BOX-A", quantity: 1 }], placements: [] },
+    { container_id: "ULD-2", loaded: [{ box_id: "BOX-B", quantity: 2 }], placements: [] },
+  ],
+};
+state.selectedContainerId = "ULD-2";
+elements.loadedList = { textContent: "", innerHTML: "", classList };
+elements.activeContainerStats = { textContent: "", innerHTML: "", classList };
+elements.placementsTableBody = { innerHTML: "", querySelectorAll: () => [] };
+elements.selectedBoxDetails = { textContent: "", innerHTML: "", classList };
+
+renderActiveContainerDetails();
+globalThis.__loadedHtml = elements.loadedList.innerHTML;
+`, context);
+
+const html = context.__loadedHtml;
+if (!html.includes("BOX-B (80 × 50 × 40) × 2")) {
+  throw new Error(`selected ULD loaded type missing: ${html}`);
+}
+if (html.includes("BOX-A")) {
+  throw new Error(`loaded type from another ULD should not render: ${html}`);
 }
 """
         completed = subprocess.run(
@@ -515,6 +731,120 @@ if (JSON.stringify(boxRows[0]) !== JSON.stringify(["箱子 ID", "长", "宽", "�
 }
 if (boxRow[0] !== "BOX-A" || boxRow[1] !== 60 || boxRow[2] !== 40 || boxRow[3] !== 30 || boxRow[4] !== 5 || boxRow[5] !== "否") {
   throw new Error(`unexpected box row: ${JSON.stringify(boxRow)}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_excel_export_box_references_include_dimensions(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const input = {
+  containers: [
+    { id: "ULD", length: 300, quantity: 1, cross_section: [[0, 0], [120, 0], [120, 120], [0, 120]] },
+  ],
+  boxes: [
+    { id: "BOX-A", length: 60, width: 40, height: 30, quantity: 3, rotatable: true },
+    { id: "BOX-B", length: 80, width: 50, height: 40, quantity: 1, rotatable: true },
+  ],
+};
+const result = {
+  loaded_count: 1,
+  unloaded_count: 1,
+  volume_utilization: 0.1,
+  validation_passed: true,
+  loaded: [{ box_id: "BOX-A", quantity: 1 }],
+  unloaded: [{ box_id: "BOX-B", quantity: 1, reason: "超出空间" }],
+  containers: [
+    {
+      container_id: "ULD-001",
+      container_type: "ULD",
+      loaded_count: 1,
+      unloaded_count: 1,
+      volume_utilization: 0.1,
+      validation_passed: true,
+      placements: [
+        { box_id: "BOX-A", instance_id: "BOX-A-001", x: 0, y: 0, z: 0, length: 60, width: 40, height: 30 },
+      ],
+    },
+  ],
+};
+const cellValue = (cell) => cell && typeof cell === "object" && "value" in cell ? cell.value : cell;
+const sheetByName = new Map(context.buildWorkbookSheets(result, input).map((sheet) => [sheet.name, sheet]));
+const loadedBox = cellValue(sheetByName.get("已装箱类型").rows[1][0]);
+const unloadedBox = cellValue(sheetByName.get("未装箱").rows[1][0]);
+const placementBox = cellValue(sheetByName.get("装箱坐标").rows[1][2]);
+
+if (loadedBox !== "BOX-A (60 × 40 × 30)") {
+  throw new Error(`loaded sheet box should include dimensions: ${JSON.stringify(loadedBox)}`);
+}
+if (unloadedBox !== "BOX-B (80 × 50 × 40)") {
+  throw new Error(`unloaded sheet box should include dimensions: ${JSON.stringify(unloadedBox)}`);
+}
+if (placementBox !== "BOX-A (60 × 40 × 30)") {
+  throw new Error(`placement sheet box should include dimensions: ${JSON.stringify(placementBox)}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_excel_column_widths_expand_to_fit_long_cell_values(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const longBoxLabel = "BOX-SUPER-LONG-TYPE (120 × 110 × 100)";
+const sheet = {
+  name: "宽度测试",
+  widths: [12],
+  rows: [
+    ["箱子 ID"],
+    [longBoxLabel],
+  ],
+};
+const worksheetXml = context.buildWorksheetXml(sheet, context.buildExcelStyleModel([sheet]));
+const widthMatch = worksheetXml.match(/<col min="1" max="1" width="([^"]+)"/);
+if (!widthMatch) {
+  throw new Error(`missing first column width: ${worksheetXml}`);
+}
+const width = Number(widthMatch[1]);
+const expectedMinimumWidth = longBoxLabel.length + 4;
+if (width < expectedMinimumWidth) {
+  throw new Error(`column width ${width} should fit ${longBoxLabel.length} chars: ${worksheetXml}`);
 }
 """
         completed = subprocess.run(

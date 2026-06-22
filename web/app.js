@@ -472,6 +472,7 @@ function buildWorkbookSheets(result, input = null) {
   const unloaded = result.unloaded ?? [];
   const validationErrors = result.validation_errors?.length ? result.validation_errors.join("；") : "";
   const exportInput = input ? normalizeInput(input) : { containers: [], boxes: [] };
+  const inputBoxById = new Map((exportInput.boxes ?? []).map((box) => [box.id, box]));
 
   return [
     {
@@ -540,7 +541,7 @@ function buildWorkbookSheets(result, input = null) {
       name: "已装箱类型",
       rows: [
         ["箱子 ID", "数量"],
-        ...loaded.map((item) => [{ value: item.box_id, styleKey: boxStyleKey(item.box_id) }, item.quantity]),
+        ...loaded.map((item) => [{ value: excelBoxLabel(item, inputBoxById), styleKey: boxStyleKey(item.box_id) }, item.quantity]),
       ],
       widths: [22, 12],
     },
@@ -548,7 +549,7 @@ function buildWorkbookSheets(result, input = null) {
       name: "未装箱",
       rows: [
         ["箱子 ID", "数量", "原因"],
-        ...unloaded.map((item) => [{ value: item.box_id, styleKey: boxStyleKey(item.box_id) }, item.quantity, item.reason ?? ""]),
+        ...unloaded.map((item) => [{ value: excelBoxLabel(item, inputBoxById), styleKey: boxStyleKey(item.box_id) }, item.quantity, item.reason ?? ""]),
       ],
       widths: [22, 12, 32],
     },
@@ -560,7 +561,7 @@ function buildWorkbookSheets(result, input = null) {
         ...placements.map((placement) => [
           { value: placement.container_id, styleKey: uldStyleKey(placement.container_id) },
           placement.instance_id,
-          { value: placement.box_id, styleKey: boxStyleKey(placement.box_id) },
+          { value: excelBoxLabel(placement, inputBoxById), styleKey: boxStyleKey(placement.box_id) },
           placement.x,
           placement.y,
           placement.z,
@@ -572,6 +573,11 @@ function buildWorkbookSheets(result, input = null) {
       widths: [18, 20, 18, 10, 10, 10, 10, 10, 10],
     },
   ];
+}
+
+function excelBoxLabel(item, inputBoxById) {
+  const dimensions = boxItemDimensions(item, inputBoxById.get(item.box_id));
+  return dimensions ? `${item.box_id} (${dimensions})` : item.box_id;
 }
 
 function buildXlsxWorkbook(sheets) {
@@ -771,7 +777,7 @@ function buildWorksheetXml(sheet, styleModel) {
   </sheetViews>
   <sheetFormatPr defaultRowHeight="20"/>
   <cols>
-    ${Array.from({ length: columnCount }, (_, index) => `<col min="${index + 1}" max="${index + 1}" width="${sheet.widths?.[index] ?? columnWidth(sheet.rows, index)}" customWidth="1"/>`).join("\n    ")}
+    ${Array.from({ length: columnCount }, (_, index) => `<col min="${index + 1}" max="${index + 1}" width="${worksheetColumnWidth(sheet, index)}" customWidth="1"/>`).join("\n    ")}
   </cols>
   <sheetData>
     ${sheet.rows.map((row, rowIndex) => worksheetRowXml(row, rowIndex, styleModel, sheet.heights?.[rowIndex])).join("\n    ")}
@@ -828,9 +834,13 @@ function worksheetCellXml(value, rowIndex, columnIndex, styleModel) {
   return `<c r="${reference}" s="${style}" t="inlineStr"><is><t>${escapeXmlText(excelCellValue(rawValue))}</t></is></c>`;
 }
 
+function worksheetColumnWidth(sheet, columnIndex) {
+  return Math.max(Number(sheet.widths?.[columnIndex] ?? 0), columnWidth(sheet.rows, columnIndex));
+}
+
 function columnWidth(rows, columnIndex) {
   const width = Math.max(...rows.map((row) => excelCellValue(row[columnIndex]).length), 8) + 4;
-  return Math.min(36, Math.max(10, width));
+  return Math.min(72, Math.max(10, width));
 }
 
 function columnName(columnIndex) {
@@ -1658,7 +1668,6 @@ function renderResult(result) {
     ${summaryCard("校验", result.validation_passed ? "通过" : "失败", result.validation_passed ? "ok" : "bad")}
   `;
 
-  renderLoadedList(result);
   renderUnloadedList(result);
   renderActiveContainerDetails();
 }
@@ -1666,6 +1675,7 @@ function renderResult(result) {
 function renderActiveContainerDetails() {
   const activeResult = getActiveResult();
   renderActiveContainerStats(activeResult);
+  renderLoadedList(activeResult);
   const placements = activeResult?.placements ?? [];
   const rows = placements
     .slice(0, 300)
@@ -1693,20 +1703,36 @@ function renderActiveContainerDetails() {
 function renderActiveContainerStats(activeResult) {
   if (!activeResult) {
     elements.activeContainerStats.classList.add("muted-text");
-    elements.activeContainerStats.textContent = "选择 ULD 后显示单个 ULD 装载率。";
+    elements.activeContainerStats.innerHTML = activeContainerStatsMarkup(null);
     return;
   }
 
   elements.activeContainerStats.classList.remove("muted-text");
-  elements.activeContainerStats.innerHTML = `
-    <div><span>单个 ULD 装载率</span><strong>${formatPercent(activeResult.volume_utilization)}</strong></div>
-    <div><span>已装箱</span><strong>${activeResult.loaded_count ?? 0}</strong></div>
-    <div><span>已用体积</span><strong>${formatNumber(activeResult.used_volume ?? 0)} / ${formatNumber(activeResult.uld_volume ?? 0)}</strong></div>
+  elements.activeContainerStats.innerHTML = activeContainerStatsMarkup(activeResult);
+}
+
+function activeContainerStatsMarkup(activeResult) {
+  if (!activeResult) {
+    return `
+    <div><span>单个 ULD 装载率</span><strong>--</strong></div>
+    <div><span>已装箱</span><strong>--</strong></div>
+    <div><span>已用体积</span><strong>-- / --</strong></div>
+  `;
+  }
+
+  const utilization = formatPercent(activeResult.volume_utilization);
+  const loadedCount = activeResult.loaded_count ?? 0;
+  const usedVolume = formatNumber(activeResult.used_volume ?? 0);
+  const uldVolume = formatNumber(activeResult.uld_volume ?? 0);
+  return `
+    <div><span>单个 ULD 装载率</span><strong>${utilization}</strong></div>
+    <div><span>已装箱</span><strong>${loadedCount}</strong></div>
+    <div><span>已用体积</span><strong>${usedVolume} / ${uldVolume}</strong></div>
   `;
 }
 
 function renderLoadedList(result) {
-  const loaded = result.loaded ?? loadedSummaryFromPlacements(result.placements);
+  const loaded = result ? result.loaded ?? loadedSummaryFromPlacements(result.placements ?? []) : [];
   if (loaded.length === 0) {
     elements.loadedList.textContent = "暂无";
     elements.loadedList.classList.add("muted-text");
@@ -1714,9 +1740,29 @@ function renderLoadedList(result) {
   }
 
   elements.loadedList.classList.remove("muted-text");
-  elements.loadedList.innerHTML = loaded
-    .map((item) => `<div>${escapeHtml(item.box_id)} × ${item.quantity}</div>`)
+  elements.loadedList.innerHTML = loadedListMarkup(result, state.input);
+}
+
+function loadedListMarkup(result, input = state.input) {
+  const loaded = result.loaded ?? loadedSummaryFromPlacements(result.placements ?? []);
+  const inputBoxById = new Map((input?.boxes ?? []).map((box) => [box.id, box]));
+  return loaded
+    .map((item) => {
+      const dimensions = boxItemDimensions(item, inputBoxById.get(item.box_id));
+      const dimensionText = dimensions ? ` (${dimensions})` : "";
+      return `<div>${escapeHtml(item.box_id)}${dimensionText} × ${item.quantity}</div>`;
+    })
     .join("");
+}
+
+function boxItemDimensions(item, inputBox) {
+  const source = [item, inputBox].find((candidate) =>
+    candidate && [candidate.length, candidate.width, candidate.height].every((value) => Number.isFinite(Number(value)))
+  );
+  if (!source) {
+    return "";
+  }
+  return [source.length, source.width, source.height].map(formatNumber).join(" × ");
 }
 
 function renderUnloadedList(result) {
@@ -1728,8 +1774,18 @@ function renderUnloadedList(result) {
   }
 
   elements.unloadedList.classList.remove("muted-text");
-  elements.unloadedList.innerHTML = unloaded
-    .map((item) => `<div>${escapeHtml(item.box_id)} × ${item.quantity}：${escapeHtml(item.reason)}</div>`)
+  elements.unloadedList.innerHTML = unloadedListMarkup(result, state.input);
+}
+
+function unloadedListMarkup(result, input = state.input) {
+  const unloaded = result.unloaded ?? [];
+  const inputBoxById = new Map((input?.boxes ?? []).map((box) => [box.id, box]));
+  return unloaded
+    .map((item) => {
+      const dimensions = boxItemDimensions(item, inputBoxById.get(item.box_id));
+      const dimensionText = dimensions ? ` (${dimensions})` : "";
+      return `<div>${escapeHtml(item.box_id)}${dimensionText} × ${item.quantity}：${escapeHtml(item.reason)}</div>`;
+    })
     .join("");
 }
 
