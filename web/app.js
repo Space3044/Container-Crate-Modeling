@@ -227,7 +227,7 @@ function bindEvents() {
   elements.containerSelector.addEventListener("change", () => selectContainer(elements.containerSelector.value));
   elements.loadSampleButton.addEventListener("click", async () => {
     await loadSample();
-    await calculatePacking();
+    drawAllViews();
   });
   elements.resetViewButton.addEventListener("click", () => {
     resetView();
