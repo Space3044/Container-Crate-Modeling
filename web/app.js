@@ -531,6 +531,7 @@ function buildWorkbookSheets(result, input = null) {
       ],
       widths: [22, 12, 32],
     },
+    buildUldVisualizationSheet(containers, exportInput),
     {
       name: "装箱坐标",
       rows: [
@@ -697,7 +698,7 @@ function buildStylesXml(styleModel) {
   const dynamicCellXfs = styleEntries
     .map(
       (entry) =>
-        `<xf numFmtId="0" fontId="2" fillId="${entry.fillId}" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>`,
+        `<xf numFmtId="0" fontId="2" fillId="${entry.fillId}" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>`,
     )
     .join("\n    ");
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -752,17 +753,42 @@ function buildWorksheetXml(sheet, styleModel) {
     ${Array.from({ length: columnCount }, (_, index) => `<col min="${index + 1}" max="${index + 1}" width="${sheet.widths?.[index] ?? columnWidth(sheet.rows, index)}" customWidth="1"/>`).join("\n    ")}
   </cols>
   <sheetData>
-    ${sheet.rows.map((row, rowIndex) => worksheetRowXml(row, rowIndex, styleModel)).join("\n    ")}
+    ${sheet.rows.map((row, rowIndex) => worksheetRowXml(row, rowIndex, styleModel, sheet.heights?.[rowIndex])).join("\n    ")}
   </sheetData>
   <autoFilter ref="${range}"/>
+  ${mergeCellsXml(sheet.merges)}
 </worksheet>`;
 }
 
-function worksheetRowXml(row, rowIndex, styleModel) {
+function mergeCellsXml(merges = []) {
+  const refs = merges
+    .filter((merge) => merge.endRow > merge.startRow || merge.endColumn > merge.startColumn)
+    .map((merge) => {
+      const start = `${columnName(merge.startColumn + 1)}${merge.startRow + 1}`;
+      const end = `${columnName(merge.endColumn + 1)}${merge.endRow + 1}`;
+      return `<mergeCell ref="${start}:${end}"/>`;
+    });
+
+  if (refs.length === 0) {
+    return "";
+  }
+
+  return `<mergeCells count="${refs.length}">${refs.join("")}</mergeCells>`;
+}
+
+function worksheetRowXml(row, rowIndex, styleModel, explicitHeight) {
   const rowNumber = rowIndex + 1;
-  return `<row r="${rowNumber}" ht="${rowIndex === 0 ? 24 : 20}" customHeight="1">${row
+  const rowHeight = worksheetRowHeight(row, rowIndex, explicitHeight);
+  return `<row r="${rowNumber}" ht="${rowHeight}" customHeight="1">${row
     .map((cell, columnIndex) => worksheetCellXml(cell, rowIndex, columnIndex, styleModel))
     .join("")}</row>`;
+}
+
+function worksheetRowHeight(row, rowIndex, explicitHeight) {
+  const baseHeight = rowIndex === 0 ? 24 : 20;
+  const lineCount = Math.max(1, ...row.map((cell) => excelCellValue(cell).split(/\r\n|\r|\n/).length));
+  const contentHeight = Math.max(baseHeight, lineCount * 20);
+  return explicitHeight != null ? Math.max(explicitHeight, contentHeight) : contentHeight;
 }
 
 function freezePaneXml() {
@@ -817,6 +843,247 @@ function allPlacementsForExport(containers) {
       container_id: container.container_id ?? container.uld_id ?? "",
     })),
   );
+}
+
+function buildUldVisualizationSheet(containers, input) {
+  const rows = [["ULD 可视化", "按 ULD 汇总已装箱尺寸数量"]];
+  const heights = [null];
+  const columnWidths = [];
+  const profileById = new Map((input?.containers ?? []).map((container) => [container.id, container]));
+
+  containers.forEach((container) => {
+    rows.push([]);
+    heights.push(null);
+    const section = buildUldVisualizationSection(container, profileById.get(container.container_type));
+    rows.push(...section.rows);
+    heights.push(...section.heights);
+    (section.widths ?? []).forEach((width, index) => {
+      columnWidths[index] = Math.max(columnWidths[index] ?? 0, width);
+    });
+  });
+
+  const columnCount = Math.max(...rows.map((row) => row.length), 1);
+  const widths = Array.from({ length: columnCount }, (_, index) =>
+    index === 0 ? Math.max(columnWidths[0] ?? 0, 16) : columnWidths[index] ?? 28,
+  );
+  return { name: "ULD 可视化", rows, widths, heights, merges: [] };
+}
+
+function buildUldVisualizationSection(container, profileInput) {
+  const containerId = container.container_id ?? container.uld_id ?? "";
+  const placements = container.placements ?? [];
+  const rows = [
+    [
+      { value: `ULD ${containerId}`, styleKey: uldStyleKey(containerId) },
+      `类型 ${container.container_type ?? container.uld_id ?? ""}`,
+      `已装 ${container.loaded_count ?? placements.length}`,
+      `装载率 ${formatPercent(container.volume_utilization)}`,
+    ],
+    ["装载清单", ...placementSizeSummaries(placements)],
+  ];
+
+  if (placements.length === 0) {
+    rows.push(["暂无已装箱"]);
+    return { rows, merges: [], heights: rows.map(() => null), widths: [] };
+  }
+
+  rows.push([]);
+  rows.push(["俯视位置图"]);
+  const topViewRows = buildTopViewRows(placements, profileInput);
+  const heights = [...rows.map(() => null), ...(topViewRows.heights ?? [])];
+  rows.push(...topViewRows);
+
+  return { rows, merges: [], heights, widths: topViewRows.widths ?? [] };
+}
+
+function placementSizeSummaries(placements) {
+  const counter = new Map();
+  placements.forEach((placement) => {
+    const key = [placement.length, placement.width, placement.height].map(formatNumber).join("*");
+    counter.set(key, (counter.get(key) ?? 0) + 1);
+  });
+  return [...counter.entries()].map(([size, quantity]) => `${size}*${quantity}`);
+}
+
+const TOP_VIEW_LABEL_WIDTH = 12;
+const TOP_VIEW_HEADER_HEIGHT = 22;
+const TOP_VIEW_MIN_WIDTH = 10;
+const TOP_VIEW_MAX_WIDTH = 60;
+const TOP_VIEW_MIN_HEIGHT = 20;
+const TOP_VIEW_MAX_HEIGHT = 240;
+const TOP_VIEW_LINE_HEIGHT = 20;
+const TOP_VIEW_LENGTH_TO_WIDTH = 0.16;
+const TOP_VIEW_WIDTH_TO_HEIGHT = 0.6;
+
+// 俯视位置图：每一摞占一个格子，按各摞锚点 (minX, minY) 落到行列网格。
+// 列 = 不同 anchorX 升序（x 长度方向向右），行 = 不同 anchorY 降序（第一象限 y 向上）。
+// 列宽取该列各摞箱子的最大长，行高取该行各摞箱子的最大宽，近似反映每摞占地大小。
+// 格子内容按高度 z 从下到上逐层书写 长*宽*高*数量；锚点相同的多摞在同一格内上下叠写。
+// 不再合并单元格，因此不会出现 Excel 合并矩形互相覆盖的报错。
+function buildTopViewRows(placements, profileInput) {
+  const stacks = buildPlacementStacks(placements);
+  if (placements.length === 0) {
+    const rows = [["y \\ x"]];
+    rows.merges = [];
+    rows.heights = [TOP_VIEW_HEADER_HEIGHT];
+    rows.widths = [TOP_VIEW_LABEL_WIDTH];
+    return rows;
+  }
+  const piles = stacks.map((stack) => ({
+    anchorX: stack.minX,
+    anchorY: stack.minY,
+    maxLength: Math.max(...stack.placements.map((placement) => placement.length)),
+    maxWidth: Math.max(...stack.placements.map((placement) => placement.width)),
+    summary: layerSizeSummaries(stack.placements).join("\n"),
+    styleKey: boxStyleKey(stack.placements[0].box_id),
+  }));
+  const xs = [...new Set(piles.map((pile) => pile.anchorX))].sort((first, second) => first - second);
+  const ys = [...new Set(piles.map((pile) => pile.anchorY))].sort((first, second) => second - first);
+  const columnByX = new Map(xs.map((x, index) => [x, index]));
+  const rowByY = new Map(ys.map((y, index) => [y, index]));
+  const colMaxLength = xs.map(() => 0);
+  const rowMaxWidth = ys.map(() => 0);
+  piles.forEach((pile) => {
+    const column = columnByX.get(pile.anchorX);
+    const row = rowByY.get(pile.anchorY);
+    colMaxLength[column] = Math.max(colMaxLength[column], pile.maxLength);
+    rowMaxWidth[row] = Math.max(rowMaxWidth[row], pile.maxWidth);
+  });
+  const header = ["y \\ x", ...xs.map((x, column) => `${formatNumber(x)}-${formatNumber(x + colMaxLength[column])}`)];
+  const body = ys.map((y, row) => [
+    `${formatNumber(y)}-${formatNumber(y + rowMaxWidth[row])}`,
+    ...xs.map(() => ""),
+  ]);
+  piles.forEach((pile) => {
+    const column = columnByX.get(pile.anchorX) + 1;
+    const row = rowByY.get(pile.anchorY);
+    const existing = body[row][column];
+    const existingText = existing && existing !== "" ? String(excelCellValue(existing)) : "";
+    const nextText = existingText !== "" ? `${existingText}\n${pile.summary}` : pile.summary;
+    body[row][column] = { value: nextText, styleKey: pile.styleKey };
+  });
+  const rows = [header, ...body];
+  rows.merges = [];
+  rows.heights = [
+    TOP_VIEW_HEADER_HEIGHT,
+    ...body.map((cells, row) => topViewRowHeight(rowMaxWidth[row], cells)),
+  ];
+  rows.widths = [
+    TOP_VIEW_LABEL_WIDTH,
+    ...colMaxLength.map((length, column) =>
+      topViewColumnWidth(length, body.map((cells) => cells[column + 1])),
+    ),
+  ];
+  return rows;
+}
+
+// 列宽：按该列各摞最大长缩放，并保证至少容纳格内最长一行文本。
+function topViewColumnWidth(maxLength, cells) {
+  const textWidth = Math.max(0, ...cells.map((cell) => longestLineLength(excelCellValue(cell))));
+  const scaled = maxLength * TOP_VIEW_LENGTH_TO_WIDTH;
+  return Math.round(clampNumber(Math.max(scaled, textWidth + 2), TOP_VIEW_MIN_WIDTH, TOP_VIEW_MAX_WIDTH));
+}
+
+// 行高：按该行各摞最大宽缩放，并保证至少容纳格内逐层书写的行数。
+function topViewRowHeight(maxWidth, cells) {
+  const lineCount = Math.max(1, ...cells.map((cell) => excelCellValue(cell).split(/\r\n|\r|\n/).length));
+  const scaled = maxWidth * TOP_VIEW_WIDTH_TO_HEIGHT;
+  return Math.round(clampNumber(Math.max(scaled, lineCount * TOP_VIEW_LINE_HEIGHT), TOP_VIEW_MIN_HEIGHT, TOP_VIEW_MAX_HEIGHT));
+}
+
+function longestLineLength(text) {
+  return Math.max(0, ...String(text).split(/\r\n|\r|\n/).map((line) => line.length));
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function buildPlacementStacks(placements) {
+  const stacks = [];
+  const stackByPlacement = new Map();
+  [...placements]
+    .sort((first, second) => first.z - second.z)
+    .forEach((placement) => {
+      const supporters = placementSupporters(placement, [...stackByPlacement.keys()]);
+      const stack = mergeSupporterStacks(supporters, stacks, stackByPlacement) ?? createPlacementStack(placement);
+      stack.placements.push(placement);
+      stack.minX = Math.min(stack.minX, placement.x);
+      stack.maxX = Math.max(stack.maxX, placement.x + placement.length);
+      stack.minY = Math.min(stack.minY, placement.y);
+      stack.maxY = Math.max(stack.maxY, placement.y + placement.width);
+      stackByPlacement.set(placement, stack);
+      if (supporters.length === 0) {
+        stacks.push(stack);
+      }
+    });
+  return stacks;
+}
+
+function placementSupporters(placement, candidates) {
+  const belowPlacements = candidates.filter((candidate) => {
+    const candidateTop = candidate.z + candidate.height;
+    return candidateTop <= placement.z && placementFootprintsOverlap(placement, candidate);
+  });
+  const supportTop = Math.max(...belowPlacements.map((candidate) => candidate.z + candidate.height));
+  if (!Number.isFinite(supportTop)) {
+    return [];
+  }
+  return belowPlacements.filter((candidate) => candidate.z + candidate.height === supportTop);
+}
+
+function mergeSupporterStacks(supporters, stacks, stackByPlacement) {
+  if (supporters.length === 0) {
+    return null;
+  }
+
+  const supporterStacks = [...new Set(supporters.map((supporter) => stackByPlacement.get(supporter)).filter(Boolean))];
+  const targetStack = supporterStacks[0];
+  supporterStacks.slice(1).forEach((stack) => {
+    targetStack.placements.push(...stack.placements);
+    targetStack.minX = Math.min(targetStack.minX, stack.minX);
+    targetStack.maxX = Math.max(targetStack.maxX, stack.maxX);
+    targetStack.minY = Math.min(targetStack.minY, stack.minY);
+    targetStack.maxY = Math.max(targetStack.maxY, stack.maxY);
+    stack.placements.forEach((placement) => stackByPlacement.set(placement, targetStack));
+    const stackIndex = stacks.indexOf(stack);
+    if (stackIndex >= 0) {
+      stacks.splice(stackIndex, 1);
+    }
+  });
+  return targetStack;
+}
+
+function createPlacementStack(placement) {
+  return {
+    placements: [],
+    minX: placement.x,
+    maxX: placement.x + placement.length,
+    minY: placement.y,
+    maxY: placement.y + placement.width,
+  };
+}
+
+function placementFootprintsOverlap(first, second) {
+  return intervalsOverlap(first.x, first.x + first.length, second.x, second.x + second.length)
+    && intervalsOverlap(first.y, first.y + first.width, second.y, second.y + second.width);
+}
+
+// 一摞格子的逐层内容：按高度 z 从下到上书写，每层按 长*宽*高 聚合数量。
+function layerSizeSummaries(placements) {
+  const byHeight = new Map();
+  placements.forEach((placement) => {
+    const layer = byHeight.get(placement.z) ?? [];
+    layer.push(placement);
+    byHeight.set(placement.z, layer);
+  });
+  return [...byHeight.entries()]
+    .sort((first, second) => first[0] - second[0])
+    .flatMap(([, layer]) => placementSizeSummaries(layer));
+}
+
+function intervalsOverlap(firstStart, firstEnd, secondStart, secondEnd) {
+  return firstStart < secondEnd && firstEnd > secondStart;
 }
 
 function excelCellValue(value) {

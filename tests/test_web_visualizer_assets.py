@@ -492,6 +492,255 @@ if (boxRow[0] !== "BOX-A" || boxRow[1] !== 60 || boxRow[2] !== 40 || boxRow[3] !
 
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
 
+    def test_excel_export_includes_uld_visualization_sheet(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const input = {
+  containers: [
+    {
+      id: "Q7",
+      length: 300,
+      quantity: 1,
+      cross_section: [[0, 0], [120, 0], [120, 120], [0, 120]],
+    },
+  ],
+  boxes: [],
+  objective: "maximize_volume",
+  search_mode: "balanced",
+};
+const result = {
+  loaded_count: 11,
+  unloaded_count: 0,
+  used_volume: 260000,
+  container_volume: 4320000,
+  volume_utilization: 0.0601,
+  loaded: [
+    { box_id: "FRONT-A", quantity: 1 },
+    { box_id: "FRONT-B", quantity: 1 },
+    { box_id: "REAR-LONG", quantity: 1 },
+    { box_id: "SMALL", quantity: 8 },
+  ],
+  unloaded: [],
+  validation_passed: true,
+  validation_errors: [],
+  containers: [
+    {
+      container_id: "Q7-001",
+      container_type: "Q7",
+      loaded_count: 11,
+      unloaded_count: 0,
+      used_volume: 260000,
+      uld_volume: 4320000,
+      volume_utilization: 0.0601,
+      validation_passed: true,
+      placements: [
+        { box_id: "FRONT-A", instance_id: "FRONT-A-001", x: 0, y: 0, z: 0, length: 80, width: 40, height: 20 },
+        { box_id: "FRONT-B", instance_id: "FRONT-B-001", x: 80, y: 0, z: 0, length: 80, width: 40, height: 30 },
+        { box_id: "REAR-LONG", instance_id: "REAR-LONG-001", x: 0, y: 80, z: 0, length: 220, width: 40, height: 50 },
+        { box_id: "SMALL", instance_id: "SMALL-001", x: 0, y: 0, z: 50, length: 20, width: 20, height: 10 },
+        { box_id: "SMALL", instance_id: "SMALL-002", x: 20, y: 0, z: 50, length: 20, width: 20, height: 10 },
+        { box_id: "SMALL", instance_id: "SMALL-003", x: 40, y: 0, z: 50, length: 20, width: 20, height: 10 },
+        { box_id: "SMALL", instance_id: "SMALL-004", x: 60, y: 0, z: 50, length: 20, width: 20, height: 10 },
+        { box_id: "SMALL", instance_id: "SMALL-005", x: 80, y: 0, z: 50, length: 20, width: 20, height: 10 },
+        { box_id: "SMALL", instance_id: "SMALL-006", x: 100, y: 0, z: 50, length: 20, width: 20, height: 10 },
+        { box_id: "SMALL", instance_id: "SMALL-007", x: 120, y: 0, z: 50, length: 20, width: 20, height: 10 },
+        { box_id: "SMALL", instance_id: "SMALL-008", x: 140, y: 0, z: 50, length: 20, width: 20, height: 10 },
+      ],
+    },
+  ],
+};
+
+const sheets = context.buildWorkbookSheets(result, input);
+const visualSheet = sheets.find((sheet) => sheet.name === "ULD 可视化");
+if (!visualSheet) {
+  throw new Error(`missing visualization sheet: ${sheets.map((sheet) => sheet.name).join(",")}`);
+}
+const cellValue = (cell) => typeof cell === "object" ? cell.value : cell;
+const flat = visualSheet.rows.flat().map(cellValue);
+const listRow = visualSheet.rows.find((row) => cellValue(row[0]) === "装载清单") ?? [];
+for (const expectedSummary of ["80*40*20*1", "80*40*30*1", "220*40*50*1", "20*20*10*8"]) {
+  if (!flat.some((value) => String(value) === expectedSummary)) {
+    throw new Error(`missing size summary ${expectedSummary}: ${JSON.stringify(visualSheet.rows)}`);
+  }
+  if (!listRow.some((cell) => String(cellValue(cell)) === expectedSummary)) {
+    throw new Error(`loading list should write summaries horizontally: ${JSON.stringify(visualSheet.rows)}`);
+  }
+}
+if (!flat.some((value) => String(value).includes("ULD Q7-001"))) {
+  throw new Error(`missing ULD title: ${JSON.stringify(visualSheet.rows)}`);
+}
+if (!flat.some((value) => String(value).includes("俯视位置图"))) {
+  throw new Error(`missing top view label: ${JSON.stringify(visualSheet.rows)}`);
+}
+if (flat.some((value) => String(value).includes("箱型尺寸矩阵") || String(value).includes("x-z 侧视图") || String(value).includes("z \\ x"))) {
+  throw new Error(`visual sheet should not include old matrix or x-z views: ${JSON.stringify(visualSheet.rows)}`);
+}
+if (flat.some((value) => String(value).includes("REAR-LONG-001"))) {
+  throw new Error(`visual sheet should not include box instance ids: ${JSON.stringify(visualSheet.rows)}`);
+}
+if (flat.some((value) => String(value).includes("FRONT-A x 1") || String(value).includes("REAR-LONG x 1"))) {
+  throw new Error(`visual summary should use size quantities: ${JSON.stringify(visualSheet.rows)}`);
+}
+if (flat.some((value) => /^y \d/.test(String(value)))) {
+  throw new Error(`visual sheet should not include y channel labels: ${JSON.stringify(visualSheet.rows)}`);
+}
+const topViewIndex = visualSheet.rows.findIndex((row) => String(cellValue(row[0])).includes("俯视位置图"));
+const headerRow = visualSheet.rows[topViewIndex + 1].map(cellValue);
+if (JSON.stringify(headerRow) !== JSON.stringify(["y \\ x", "0-220", "80-160"])) {
+  throw new Error(`top view header should use each pile anchor x extended by its max length: ${JSON.stringify(headerRow)}`);
+}
+const bodyRows = visualSheet.rows.slice(topViewIndex + 2);
+const rowByY = new Map(bodyRows.filter((row) => String(cellValue(row[0])).includes("-")).map((row) => [String(cellValue(row[0])), row.map(cellValue)]));
+if (JSON.stringify([...rowByY.keys()]) !== JSON.stringify(["80-120", "0-40"])) {
+  throw new Error(`top view rows should be one row per anchor y, descending with first quadrant y-up: ${JSON.stringify([...rowByY.keys()])}`);
+}
+const frontRow = rowByY.get("0-40") ?? [];
+const frontText = frontRow.slice(1).map((value) => String(value ?? "")).join("\n");
+for (const expectedFrontSummary of ["80*40*20*1", "80*40*30*1", "20*20*10*4"]) {
+  if (!frontText.includes(expectedFrontSummary)) {
+    throw new Error(`front row should show boxes near y=0: ${JSON.stringify(visualSheet.rows)}`);
+  }
+}
+const frontFirstCell = String(frontRow[1] ?? "");
+if (frontFirstCell !== "80*40*20*1\n20*20*10*4") {
+  throw new Error(`front stack should list layers bottom-to-top: ${JSON.stringify(frontFirstCell)}`);
+}
+const rearRow = rowByY.get("80-120") ?? [];
+const rearCells = rearRow.slice(1).map((value) => String(value ?? ""));
+if (rearCells.filter((value) => value.includes("220*40*50*1")).length !== 1) {
+  throw new Error(`rear long box should appear once in top view: ${JSON.stringify(visualSheet.rows)}`);
+}
+const worksheetXml = context.buildWorksheetXml(visualSheet, context.buildExcelStyleModel([visualSheet]));
+const visualMerges = visualSheet.merges ?? [];
+if (visualMerges.length !== 0) {
+  throw new Error(`each pile occupies a single cell, so the visualization sheet should never merge: ${JSON.stringify(visualMerges)}`);
+}
+const frontRowNumber = topViewIndex + 2 + [...rowByY.keys()].indexOf("0-40") + 1;
+if (!worksheetXml.includes(`<row r="${frontRowNumber}" ht="40" customHeight="1">`)) {
+  throw new Error(`multi-line top view row should be tall enough: ${worksheetXml}`);
+}
+const stylesXml = context.buildStylesXml(context.buildExcelStyleModel([visualSheet]));
+if (!stylesXml.includes('wrapText="1"')) {
+  throw new Error(`multi-line top view cells should enable Excel wrapText: ${stylesXml}`);
+}
+function sizeQuantityTotal(cells) {
+  return cells.reduce((total, cell) => {
+    const text = String(cellValue(cell) ?? "");
+    const matches = [...text.matchAll(/\d+(?:\.\d+)?\*\d+(?:\.\d+)?\*\d+(?:\.\d+)?\*(\d+)/g)];
+    return total + matches.reduce((sum, match) => sum + Number(match[1]), 0);
+  }, 0);
+}
+function visibleCellsAfterMerges(rows, merges) {
+  return rows.flatMap((row, rowIndex) =>
+    row.filter((_, columnIndex) => !merges.some((merge) =>
+      rowIndex >= merge.startRow &&
+      rowIndex <= merge.endRow &&
+      columnIndex >= merge.startColumn &&
+      columnIndex <= merge.endColumn &&
+      (rowIndex !== merge.startRow || columnIndex !== merge.startColumn)
+    ))
+  );
+}
+const topViewRows = [...rowByY.values()];
+const listTotal = sizeQuantityTotal(listRow.slice(1));
+const topViewTotal = sizeQuantityTotal(topViewRows.flatMap((row) => row.slice(1)));
+if (listTotal !== topViewTotal) {
+  throw new Error(`loading list total ${listTotal} must equal top view total ${topViewTotal}: ${JSON.stringify(visualSheet.rows)}`);
+}
+const multiSupportPlacements = [
+  { box_id: "LOW-A", x: 0, y: 0, z: 0, length: 80, width: 40, height: 50 },
+  { box_id: "LOW-B", x: 80, y: 0, z: 0, length: 80, width: 40, height: 50 },
+  { box_id: "TOP", x: 0, y: 0, z: 50, length: 160, width: 40, height: 20 },
+];
+const multiSupportStacks = context.buildPlacementStacks(multiSupportPlacements);
+if (multiSupportStacks.length !== 1 || multiSupportStacks[0].placements.length !== 3) {
+  throw new Error(`a box supported by multiple lower boxes should form one stack: ${JSON.stringify(multiSupportStacks)}`);
+}
+const multiSupportRows = context.buildTopViewRows(
+  multiSupportPlacements,
+  { length: 300, cross_section: [[0, 0], [120, 0], [120, 120], [0, 120]] },
+);
+if (JSON.stringify(multiSupportRows[0].map(cellValue)) !== JSON.stringify(["y \\ x", "0-160"])) {
+  throw new Error(`multi-support stack should use the largest box length as one x cell: ${JSON.stringify(multiSupportRows)}`);
+}
+const multiSupportAnchor = String(cellValue(multiSupportRows[1][1]) ?? "");
+if (multiSupportAnchor !== "80*40*50*2\n160*40*20*1") {
+  throw new Error(`multi-support stack should list bottom layer then top layer: ${JSON.stringify(multiSupportAnchor)}`);
+}
+const multiSupportVisibleTotal = sizeQuantityTotal(visibleCellsAfterMerges(multiSupportRows, multiSupportRows.merges ?? []));
+if (multiSupportVisibleTotal !== 3) {
+  throw new Error(`multi-support stack should keep all boxes visible once: ${JSON.stringify(multiSupportRows)}, merges=${JSON.stringify(multiSupportRows.merges ?? [])}`);
+}
+const stackedRows = context.buildTopViewRows(
+  [
+    { box_id: "STACK-A", x: 0, y: 0, z: 0, length: 100, width: 80, height: 20 },
+    { box_id: "STACK-B", x: 0, y: 0, z: 20, length: 100, width: 80, height: 30 },
+    { box_id: "STACK-C", x: 100, y: 0, z: 0, length: 50, width: 40, height: 40 },
+  ],
+  { length: 200, cross_section: [[0, 0], [120, 0], [120, 120], [0, 120]] },
+);
+const stackedHeader = stackedRows[0].map(cellValue);
+if (JSON.stringify(stackedHeader) !== JSON.stringify(["y \\ x", "0-100", "100-150"])) {
+  throw new Error(`top view should take each stack max length for x ranges: ${JSON.stringify(stackedHeader)}`);
+}
+if (JSON.stringify(stackedRows.slice(1).map((row) => String(cellValue(row[0])))) !== JSON.stringify(["0-80"])) {
+  throw new Error(`stacked piles share one anchor-y row spanning their max width: ${JSON.stringify(stackedRows)}`);
+}
+const stackedAnchor = String(cellValue(stackedRows[1][1]) ?? "");
+if (stackedAnchor !== "100*80*20*1\n100*80*30*1") {
+  throw new Error(`stacked boxes should stay in one cell listed bottom-to-top: ${JSON.stringify(stackedAnchor)}`);
+}
+if ((stackedRows.merges ?? []).length !== 0) {
+  throw new Error(`stacked piles each occupy a single cell and should not merge: ${JSON.stringify(stackedRows.merges ?? [])}`);
+}
+const stackedVisibleTotal = sizeQuantityTotal(visibleCellsAfterMerges(stackedRows, stackedRows.merges ?? []));
+if (stackedVisibleTotal !== 3) {
+  throw new Error(`stacked top view should keep every box visible once: ${JSON.stringify(stackedRows)}, merges=${JSON.stringify(stackedRows.merges ?? [])}`);
+}
+// 两个互相独立（无支撑关系）但俯视格子直接重叠的摞各自降级为单格、不合并，
+// 保持各摞独立不并组，避免合并矩形互相覆盖导致 Excel 报错。
+const overlapRows = context.buildTopViewRows(
+  [
+    { box_id: "PILE-A", x: 0, y: 0, z: 0, length: 100, width: 100, height: 50 },
+    { box_id: "PILE-B", x: 50, y: 50, z: 0, length: 100, width: 100, height: 50 },
+  ],
+  { length: 200, cross_section: [[0, 0], [200, 0], [200, 200], [0, 200]] },
+);
+if ((overlapRows.merges ?? []).length !== 0) {
+  throw new Error(`overlapping piles must not merge to avoid Excel overlap errors: ${JSON.stringify(overlapRows.merges ?? [])}`);
+}
+const overlapBody = overlapRows.slice(1).flatMap((row) => row.slice(1)).map((value) => String(cellValue(value) ?? ""));
+const overlapNonEmpty = overlapBody.filter((value) => value !== "");
+if (overlapNonEmpty.length !== 2) {
+  throw new Error(`overlapping piles should each stay as its own single cell: ${JSON.stringify(overlapRows)}`);
+}
+const overlapTotal = sizeQuantityTotal(overlapRows.slice(1).flatMap((row) => row.slice(1)));
+if (overlapTotal !== 2) {
+  throw new Error(`overlapping piles should each stay visible once: ${JSON.stringify(overlapRows)}`);
+}
+
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
