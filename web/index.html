@@ -137,29 +137,31 @@
               </label>
               <span id="animationProgress" class="animation-progress">完整结果</span>
             </div>
+            <div class="slice-control">
+              <label for="sliceSlider">x 切片位置 <span id="sliceValue">0</span></label>
+              <input id="sliceSlider" type="range" min="0" max="300" step="1" value="0" />
+            </div>
           </div>
         </div>
-        <div class="scene-stage">
-          <canvas id="sceneCanvas" aria-label="ULD 装箱三维可视化画布"></canvas>
-          <div id="sceneTooltip" class="scene-tooltip" role="status" aria-label="悬停箱子信息"></div>
-        </div>
-        <div class="slice-control">
-          <label for="sliceSlider">x 切片位置 <span id="sliceValue">0</span></label>
-          <input id="sliceSlider" type="range" min="0" max="300" step="1" value="0" />
-        </div>
-        <div class="projection-grid" aria-label="二维投影视图">
-          <article class="projection-card">
-            <div class="projection-title">俯视 x-y</div>
-            <canvas id="topViewCanvas" aria-label="x-y 俯视图"></canvas>
-          </article>
-          <article class="projection-card">
-            <div class="projection-title">侧视 x-z</div>
-            <canvas id="sideViewCanvas" aria-label="x-z 侧视图"></canvas>
-          </article>
-          <article class="projection-card">
-            <div class="projection-title">截面 y-z：显示当前 x 切片穿过的箱子</div>
-            <canvas id="sectionViewCanvas" aria-label="y-z 截面图"></canvas>
-          </article>
+        <div class="viewer-body">
+          <div class="scene-stage">
+            <canvas id="sceneCanvas" aria-label="ULD 装箱三维可视化画布"></canvas>
+            <div id="sceneTooltip" class="scene-tooltip" role="status" aria-label="悬停箱子信息"></div>
+          </div>
+          <div class="projection-grid" aria-label="二维投影视图">
+            <article class="projection-card">
+              <div class="projection-title">俯视 x-y</div>
+              <canvas id="topViewCanvas" aria-label="x-y 俯视图"></canvas>
+            </article>
+            <article class="projection-card">
+              <div class="projection-title">侧视 x-z</div>
+              <canvas id="sideViewCanvas" aria-label="x-z 侧视图"></canvas>
+            </article>
+            <article class="projection-card">
+              <div class="projection-title">截面 y-z：显示当前 x 切片穿过的箱子</div>
+              <canvas id="sectionViewCanvas" aria-label="y-z 截面图"></canvas>
+            </article>
+          </div>
         </div>
       </section>
 
@@ -169,27 +171,31 @@
           <h2 id="details-title">装载明细</h2>
           <p>查看 ULD 单体装载与箱子坐标。</p>
         </div>
-        <div class="result-section">
+        <div class="result-section detail-current">
           <h3>当前 ULD</h3>
           <label class="container-selector-label">
             选择要查看的 ULD 实例
             <select id="containerSelector"></select>
           </label>
-          <div id="activeContainerStats" class="active-container-stats muted-text">选择 ULD 后显示单个 ULD 装载率。</div>
+          <div id="activeContainerStats" class="active-container-stats muted-text">
+            <div><span>单个 ULD 装载率</span><strong>--</strong></div>
+            <div><span>已装箱</span><strong>--</strong></div>
+            <div><span>已用体积</span><strong>-- / --</strong></div>
+          </div>
         </div>
-        <div class="result-section">
+        <div class="result-section detail-loaded">
           <h3>已装箱类型</h3>
           <div id="loadedList" class="result-list muted-text">暂无</div>
         </div>
-        <div class="result-section">
+        <div class="result-section detail-unloaded">
           <h3>未装箱</h3>
           <div id="unloadedList" class="result-list muted-text">暂无</div>
         </div>
-        <div class="result-section">
+        <div class="result-section detail-selected">
           <h3>当前选中箱子</h3>
           <div id="selectedBoxDetails" class="selected-box-card muted-text">点击 3D 视图、三视图或坐标表中的箱子查看位置范围。</div>
         </div>
-        <div class="result-section">
+        <div class="result-section detail-placements">
           <h3>装箱坐标</h3>
           <div class="table-scroll placements-scroll">
             <table class="placements-table">
