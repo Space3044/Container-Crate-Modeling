@@ -336,6 +336,14 @@ select:focus-visible {
   content: "";
 }
 
+.section-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .result-section {
   display: grid;
   gap: 12px;

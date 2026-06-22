@@ -58,6 +58,18 @@ const fallbackInput = {
         [0, 290],
       ],
     },
+    {
+      id: "Q4",
+      length: 306,
+      quantity: 0,
+      cross_section: [
+        [0, 0],
+        [240, 0],
+        [240, 130],
+        [120, 290],
+        [0, 290],
+      ],
+    },
   ],
   boxes: [],
   objective: "maximize_volume",
@@ -166,6 +178,7 @@ function cacheElements() {
   elements.containerSelector = document.getElementById("containerSelector");
   elements.boxTableBody = document.getElementById("boxTableBody");
   elements.addBoxButton = document.getElementById("addBoxButton");
+  elements.clearBoxesButton = document.getElementById("clearBoxesButton");
   elements.bulkBoxInput = document.getElementById("bulkBoxInput");
   elements.importBoxesButton = document.getElementById("importBoxesButton");
   elements.searchModeSelect = document.getElementById("searchModeSelect");
@@ -203,6 +216,7 @@ function cacheElements() {
 function bindEvents() {
   elements.addContainerButton.addEventListener("click", () => addContainerRow());
   elements.addBoxButton.addEventListener("click", () => addBoxRow());
+  elements.clearBoxesButton.addEventListener("click", () => clearBoxRows());
   if (elements.importBoxesButton) {
     elements.importBoxesButton.addEventListener("click", importBulkBoxes);
   }
@@ -368,6 +382,13 @@ function importBulkBoxes() {
     elements.bulkBoxInput.value = "";
   } catch (error) {
     showError(error.message);
+  }
+}
+
+function clearBoxRows(tableBody = elements.boxTableBody) {
+  tableBody.innerHTML = "";
+  if (elements.errorMessage) {
+    clearError();
   }
 }
 

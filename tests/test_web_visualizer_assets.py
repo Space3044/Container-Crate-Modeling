@@ -21,6 +21,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "loadedList",
             "historyList",
             "exportExcelButton",
+            "clearBoxesButton",
             "bulkBoxInput",
             "importBoxesButton",
             "searchModeSelect",
@@ -42,6 +43,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("添加 ULD", html)
         self.assertIn("批量粘贴箱子", html)
         self.assertIn("识别并添加箱子", html)
+        self.assertIn("清空箱子", html)
         self.assertIn("算法模式", html)
         self.assertIn('value="fast"', html)
         self.assertIn('value="balanced"', html)
@@ -114,6 +116,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "selectHistoryRecord",
             "historyRecordLabel",
             "importBulkBoxes",
+            "clearBoxRows",
             "parseBulkBoxLines",
             "parseBulkBoxLine",
             "exportExcel",
@@ -189,6 +192,8 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("function rgbaColor(color, alpha)", script)
         self.assertIn("focusedBoxId", script)
         self.assertIn("importBoxesButton.addEventListener", script)
+        self.assertIn('elements.clearBoxesButton = document.getElementById("clearBoxesButton")', script)
+        self.assertIn('elements.clearBoxesButton.addEventListener("click", () => clearBoxRows())', script)
         self.assertIn("bulkBoxInput", script)
         self.assertIn("140*105*94*20", script)
         self.assertIn("40.5*40.5*14*1", script)
@@ -279,6 +284,36 @@ if (JSON.stringify(boxes) !== JSON.stringify(expected)) {
 
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
 
+    def test_clear_box_rows_removes_all_box_inputs(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const tableBody = { innerHTML: "<tr><td>BOX-A</td></tr><tr><td>BOX-B</td></tr>" };
+context.clearBoxRows(tableBody);
+if (tableBody.innerHTML !== "") {
+  throw new Error(`box rows were not cleared: ${tableBody.innerHTML}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
     def test_visualizer_styles_scene_tooltip_and_clearer_box_edges(self):
         css = Path("web/styles.css").read_text(encoding="utf-8")
 
@@ -338,6 +373,7 @@ if (JSON.stringify(boxes) !== JSON.stringify(expected)) {
             ("L", 346, [[0, 0], [240, 0], [240, 160], [0, 160]]),
             ("PGA", 600, [[0, 0], [240, 0], [240, 190], [120, 290], [0, 290]]),
             ("Q5", 306, [[0, 0], [240, 0], [240, 190], [120, 290], [0, 290]]),
+            ("Q4", 306, [[0, 0], [240, 0], [240, 130], [120, 290], [0, 290]]),
         ]
 
         for container_id, length, _ in expected_containers:
