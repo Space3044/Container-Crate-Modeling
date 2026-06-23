@@ -467,16 +467,19 @@ function currentExportCreatedAt() {
   return record?.createdAt ?? new Date().toISOString();
 }
 
+const EXPORT_FILE_TIMEZONE_OFFSET_MINUTES = 8 * 60;
+
 function formatExportTimestamp(value) {
   const date = new Date(value);
   const validDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const exportDate = new Date(validDate.getTime() + EXPORT_FILE_TIMEZONE_OFFSET_MINUTES * 60 * 1000);
   const parts = [
-    validDate.getFullYear(),
-    String(validDate.getMonth() + 1).padStart(2, "0"),
-    String(validDate.getDate()).padStart(2, "0"),
-    String(validDate.getHours()).padStart(2, "0"),
-    String(validDate.getMinutes()).padStart(2, "0"),
-    String(validDate.getSeconds()).padStart(2, "0"),
+    exportDate.getUTCFullYear(),
+    String(exportDate.getUTCMonth() + 1).padStart(2, "0"),
+    String(exportDate.getUTCDate()).padStart(2, "0"),
+    String(exportDate.getUTCHours()).padStart(2, "0"),
+    String(exportDate.getUTCMinutes()).padStart(2, "0"),
+    String(exportDate.getUTCSeconds()).padStart(2, "0"),
   ];
   return `${parts[0]}${parts[1]}${parts[2]}-${parts[3]}${parts[4]}${parts[5]}`;
 }

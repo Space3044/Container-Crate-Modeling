@@ -1,5 +1,6 @@
 import unittest
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -269,6 +270,41 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn('elements.importBoxesButton.addEventListener("click", importBulkBoxes)', script)
         self.assertIn("if (!elements.bulkBoxInput) {", script)
         self.assertIn("批量粘贴入口不可用", script)
+
+    def test_export_file_names_are_stable_across_runner_timezones(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const result = { volume_utilization: 0.037 };
+const excelName = context.buildExcelFileName(result, "2026-06-23T01:02:03.000Z");
+const htmlName = context.buildHtmlFileName(result, "2026-06-23T01:02:03.000Z");
+if (excelName !== "20260623-090203-装载率3.70%.xlsx") {
+  throw new Error(`unexpected excel file name: ${excelName}`);
+}
+if (htmlName !== "20260623-090203-装载率3.70%.html") {
+  throw new Error(`unexpected html file name: ${htmlName}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            env={**os.environ, "TZ": "UTC"},
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
 
     def test_bulk_box_import_accepts_mac_newlines_and_full_width_separators(self):
         node_script = r"""
