@@ -358,6 +358,16 @@ select:focus-visible {
   margin: 2px 0 0;
 }
 
+.export-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.export-actions .small-button {
+  width: 100%;
+}
+
 .section-card {
   display: grid;
   gap: 14px;

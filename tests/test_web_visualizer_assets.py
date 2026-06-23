@@ -21,6 +21,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "loadedList",
             "historyList",
             "exportExcelButton",
+            "exportHtmlButton",
             "clearBoxesButton",
             "bulkBoxInput",
             "importBoxesButton",
@@ -74,6 +75,8 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("选择要查看的 ULD 实例", html)
         self.assertIn("单个 ULD 装载率", html)
         self.assertIn("导出 XLSX", html)
+        self.assertIn("导出 HTML", html)
+        self.assertIn('class="export-actions"', html)
         self.assertIn("悬停箱子信息", html)
         self.assertIn("<th>ID</th>", html)
         self.assertIn("<th>长宽互换</th>", html)
@@ -127,7 +130,10 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "parseBulkBoxLines",
             "parseBulkBoxLine",
             "exportExcel",
+            "exportHtmlReport",
             "buildExcelWorkbook",
+            "buildHtmlReport",
+            "buildHtmlFileName",
             "buildExcelFileName",
             "currentExportCreatedAt",
             "formatExportTimestamp",
@@ -138,6 +144,9 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "uldStyleKey",
             "boxStyleKey",
             "downloadExcelWorkbook",
+            "downloadHtmlReport",
+            "buildHtmlProjectionSvg",
+            "buildHtmlReportContainerSection",
             "createZipArchive",
             "crc32",
             "updateHoveredScenePlacement",
@@ -208,8 +217,11 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn(r"line.split(/[\s*＊×xXｘＸ✕✖⨯]+/)", script)
         self.assertIn("quantity: readNonNegativeInteger(quantity", script)
         self.assertIn("exportExcelButton.addEventListener", script)
+        self.assertIn("exportHtmlButton.addEventListener", script)
         self.assertIn("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", script)
+        self.assertIn("text/html;charset=utf-8", script)
         self.assertIn("downloadExcelWorkbook(buildExcelWorkbook(state.result, state.input), buildExcelFileName(state.result, currentExportCreatedAt()))", script)
+        self.assertIn("downloadHtmlReport(buildHtmlReport(state.result, state.input, currentExportCreatedAt()), buildHtmlFileName(state.result, currentExportCreatedAt()))", script)
         self.assertIn("装载率", script)
         self.assertIn("selectedHistoryId", script)
         self.assertIn(".xlsx", script)
@@ -329,6 +341,8 @@ if (tableBody.innerHTML !== "") {
         self.assertIn(".panel-title", css)
         self.assertIn(".section-card", css)
         self.assertIn(".result-section", css)
+        self.assertIn(".export-actions {\n  display: grid;\n  grid-template-columns: repeat(2, minmax(0, 1fr));", css)
+        self.assertIn(".export-actions .small-button {\n  width: 100%;", css)
         self.assertIn(".history-list", css)
         self.assertIn(".history-record", css)
         self.assertIn(".bulk-box-import", css)
@@ -731,6 +745,399 @@ if (JSON.stringify(boxRows[0]) !== JSON.stringify(["箱子 ID", "长", "宽", "�
 }
 if (boxRow[0] !== "BOX-A" || boxRow[1] !== 60 || boxRow[2] !== 40 || boxRow[3] !== 30 || boxRow[4] !== 5 || boxRow[5] !== "否") {
   throw new Error(`unexpected box row: ${JSON.stringify(boxRow)}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_html_report_export_includes_svg_views_and_tables(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const input = {
+  containers: [
+    {
+      id: "Q7",
+      length: 300,
+      quantity: 1,
+      cross_section: [[0, 0], [120, 0], [120, 120], [0, 120]],
+    },
+  ],
+  boxes: [
+    { id: "BOX-A", length: 100, width: 80, height: 20, quantity: 1, rotatable: true },
+  ],
+  objective: "maximize_volume",
+  search_mode: "balanced",
+};
+const result = {
+  loaded_count: 1,
+  unloaded_count: 0,
+  used_volume: 160000,
+  container_volume: 4320000,
+  volume_utilization: 0.037,
+  loaded: [{ box_id: "BOX-A", quantity: 1 }],
+  unloaded: [],
+  validation_passed: true,
+  validation_errors: [],
+  containers: [
+    {
+      container_id: "Q7-001",
+      container_type: "Q7",
+      loaded_count: 1,
+      unloaded_count: 0,
+      used_volume: 160000,
+      uld_volume: 4320000,
+      volume_utilization: 0.037,
+      validation_passed: true,
+      placements: [
+        { box_id: "BOX-A", instance_id: "BOX-A-001", x: 25, y: 35, z: 10, length: 100, width: 80, height: 20 },
+      ],
+    },
+  ],
+};
+
+const html = context.buildHtmlReport(result, input, "2026-06-23T01:02:03.000Z");
+for (const expected of [
+  "<!doctype html>",
+  "ULD 装载报告",
+  "Q7-001",
+  "BOX-A",
+  "BOX-A-001",
+  "查看 ULD",
+  "全部 ULD",
+  "data-uld-filter",
+  "data-uld-section=\"Q7-001\"",
+  "俯视位置图",
+  "交互 3D 视图",
+  "scene-view-controls",
+  "data-scene-view=\"isometric\"",
+  "data-scene-view=\"top\"",
+  "data-scene-view=\"side\"",
+  "data-scene-view=\"section\"",
+  "data-scene-reset",
+  "等轴",
+  "俯视",
+  "侧视",
+  "截面",
+  "重置",
+  "data-report-scene=\"Q7-001\"",
+  "const reportSceneData",
+  "function setHtmlReportSceneView",
+  "function drawHtmlReportScene",
+  "pointerdown",
+  "wheel",
+  "dblclick",
+  "装箱坐标",
+  "未装箱",
+  "sheet-tabs",
+  "sheet-page active",
+  "data-sheet-name=\"总体结果\"",
+  "data-sheet-name=\"ULD 明细\"",
+  "data-sheet-name=\"ULD 数据\"",
+  "data-sheet-name=\"箱子数据\"",
+  "data-sheet-name=\"已装箱类型\"",
+  "data-sheet-name=\"未装箱\"",
+  "data-sheet-name=\"ULD 可视化\"",
+  "data-sheet-name=\"装箱坐标\"",
+  "top-views-grid",
+  "scene-row",
+  "view-card-heading",
+  "3D 俯视图",
+  "data-report-top-view=\"Q7-001\"",
+  "report-scene-stage",
+  "data-report-tooltip",
+  "data-report-selection",
+  "data-position-map",
+  "data-position-label-toggle",
+  "隐藏标识",
+  "function initHtmlReportPositionMap",
+  "function initHtmlReportPositionMapLabelToggle",
+  "function selectHtmlReportPositionPile",
+  "function initHtmlReportTopView",
+  "function updateHtmlReportSceneHover",
+  "function selectHtmlReportScenePlacement",
+  "function renderHtmlReportSceneTooltip",
+  "function drawHtmlReportFloorGrid",
+  "function drawHtmlReportTopProjection",
+  "function drawHtmlReportTopProjectionLabel",
+  "if (selected) {\n            drawHtmlReportTopProjectionLabel(context, rect, placement.instance_id, selected);",
+  ".top-views-grid .view-card { display: grid; grid-template-rows: auto minmax(0, 1fr);",
+  ".position-map-svg-wrap { width: 100%; overflow: hidden;",
+  ".position-map-svg { width: 100%; min-width: 0; aspect-ratio: 17 / 8;",
+  ".position-pile { cursor: pointer;",
+  ".position-pile.selected .position-pile-rect",
+  ".position-map-svg.position-map-label-hidden .position-pile-label-layer",
+  ".position-pile-label-item.selected .position-pile-label-bg",
+  ".position-pile-label { fill: #ffffff; stroke: rgba(2, 6, 23, 0.88); stroke-width: 3px; paint-order: stroke; font-size: 12px; font-weight: 900; pointer-events: none; }",
+  "data-placement-x=\"25\"",
+  "data-placement-y=\"35\"",
+  "data-placement-z=\"10\"",
+  "25-125",
+  "35-115",
+  "BOX-A（100*80*20）*1",
+  "<canvas",
+  "100 × 80 × 20",
+]) {
+  if (!html.includes(expected)) {
+    throw new Error(`missing html report content ${expected}: ${html.slice(0, 600)}`);
+  }
+}
+if (html.includes("<script src=") || html.includes("<link rel=\"stylesheet\"")) {
+  throw new Error("html report should be self-contained");
+}
+for (const removed of [
+  "sheet-page-wide",
+  ".sheet-page-wide",
+]) {
+  if (html.includes(removed)) {
+    throw new Error(`html visualization page should use the original report width, but found ${removed}`);
+  }
+}
+const inlineScript = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
+if (!inlineScript) {
+  throw new Error("html report should include an inline script");
+}
+new vm.Script(inlineScript);
+const visualizationStart = html.indexOf('data-sheet-name="ULD 可视化"');
+const coordinateStart = html.indexOf('data-sheet-name="装箱坐标"');
+const visualizationHtml = html.slice(visualizationStart, coordinateStart);
+if (visualizationHtml.includes("俯视 X-Y") || visualizationHtml.includes("侧视 X-Z") || visualizationHtml.includes("截面 Y-Z")) {
+  throw new Error(`HTML visualization page should only include the position map and interactive 3D view: ${visualizationHtml}`);
+}
+if (inlineScript.includes("drawHtmlReportTopProjectionLabel(context, rect, placement.box_id, selected)")) {
+  throw new Error("3D top view should not show box type labels by default");
+}
+const loadSummaryStart = visualizationHtml.indexOf("装载清单");
+const loadSummaryEnd = visualizationHtml.indexOf("top-views-grid", loadSummaryStart);
+const loadSummaryHtml = visualizationHtml.slice(loadSummaryStart, loadSummaryEnd);
+if (!loadSummaryHtml.includes("BOX-A（100*80*20）*1")) {
+  throw new Error(`load summary should include box id with dimensions and quantity: ${loadSummaryHtml}`);
+}
+if (loadSummaryHtml.includes("100*80*20*1")) {
+  throw new Error(`load summary should not omit box id: ${loadSummaryHtml}`);
+}
+const fileName = context.buildHtmlFileName(result, "2026-06-23T01:02:03.000Z");
+if (fileName !== "20260623-090203-装载率3.70%.html") {
+  throw new Error(`unexpected html file name: ${fileName}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_html_report_top_position_map_uses_actual_coordinate_piles(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const input = {
+  containers: [
+    { id: "Q7", length: 220, quantity: 1, cross_section: [[0, 0], [100, 0], [100, 80], [0, 80]] },
+  ],
+  boxes: [],
+};
+const result = {
+  loaded_count: 3,
+  unloaded_count: 0,
+  used_volume: 160000,
+  container_volume: 1760000,
+  volume_utilization: 0.09,
+  loaded: [],
+  unloaded: [],
+  validation_passed: true,
+  validation_errors: [],
+  containers: [
+    {
+      container_id: "Q7-001",
+      container_type: "Q7",
+      loaded_count: 3,
+      unloaded_count: 0,
+      used_volume: 160000,
+      uld_volume: 1760000,
+      volume_utilization: 0.09,
+      validation_passed: true,
+      placements: [
+        { box_id: "BOTTOM", instance_id: "BOTTOM-001", x: 10, y: 20, z: 0, length: 100, width: 50, height: 20 },
+        { box_id: "TOP", instance_id: "TOP-001", x: 20, y: 30, z: 20, length: 80, width: 40, height: 20 },
+        { box_id: "SOLO", instance_id: "SOLO-001", x: 150, y: 20, z: 0, length: 40, width: 30, height: 20 },
+      ],
+    },
+  ],
+};
+
+const html = context.buildHtmlReport(result, input, "2026-06-23T01:02:03.000Z");
+const mapStart = html.indexOf("俯视位置图");
+const topViewStart = html.indexOf("3D 俯视图", mapStart);
+const mapHtml = html.slice(mapStart, topViewStart);
+
+for (const expected of [
+  "position-map-svg",
+  "data-position-map",
+  "view-card-heading",
+  "data-position-label-toggle",
+  "aria-pressed=\"true\"",
+  "隐藏标识",
+  "data-pile-index=\"1\"",
+  "data-pile-count=\"2\"",
+  "role=\"button\"",
+  "tabindex=\"0\"",
+  "data-pile-x=\"10\"",
+  "data-pile-y=\"20\"",
+  "data-pile-width=\"100\"",
+  "data-pile-height=\"50\"",
+  "data-pile-members=\"TOP-001,BOTTOM-001\"",
+  "position-pile-layer",
+  "position-pile-label-layer",
+  "position-pile-label-bg",
+  "TOP（80*40*20）*1",
+  "BOTTOM（100*50*20）*1",
+  "data-pile-index=\"2\"",
+  "data-pile-count=\"1\"",
+  "data-pile-x=\"150\"",
+  "data-pile-y=\"20\"",
+  "data-pile-width=\"40\"",
+  "data-pile-height=\"30\"",
+]) {
+  if (!mapHtml.includes(expected)) {
+    throw new Error(`missing actual coordinate pile content ${expected}: ${mapHtml}`);
+  }
+}
+if (mapHtml.includes("<table")) {
+  throw new Error(`top position map should not use equal-width table cells: ${mapHtml}`);
+}
+if (mapHtml.includes("position-map-toolbar")) {
+  throw new Error(`position label toggle should sit in the view-card heading: ${mapHtml}`);
+}
+if (html.includes("overflow-x: auto; }\n    .position-map-svg { min-width: 640px")) {
+  throw new Error("top position map should scale inside the card without a horizontal scrollbar");
+}
+const shapeLayerIndex = mapHtml.indexOf("position-pile-layer");
+const labelLayerIndex = mapHtml.indexOf("position-pile-label-layer");
+if (shapeLayerIndex < 0 || labelLayerIndex < 0 || shapeLayerIndex > labelLayerIndex) {
+  throw new Error(`pile labels should be rendered after all pile rectangles: ${mapHtml}`);
+}
+const topLayerIndex = mapHtml.indexOf("TOP（80*40*20）*1");
+const bottomLayerIndex = mapHtml.indexOf("BOTTOM（100*50*20）*1");
+if (topLayerIndex < 0 || bottomLayerIndex < 0 || topLayerIndex > bottomLayerIndex) {
+  throw new Error(`pile labels should be ordered from top to bottom: ${mapHtml}`);
+}
+if (mapHtml.includes("80*40*20*1") || mapHtml.includes("100*50*20*1")) {
+  throw new Error(`pile labels should include box id and parenthesized dimensions: ${mapHtml}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_html_report_top_position_map_keeps_l_shaped_pile_footprints(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const input = {
+  containers: [
+    { id: "Q7", length: 100, quantity: 1, cross_section: [[0, 0], [100, 0], [100, 100], [0, 100]] },
+  ],
+  boxes: [],
+};
+const result = {
+  loaded_count: 2,
+  unloaded_count: 0,
+  used_volume: 80000,
+  container_volume: 1000000,
+  volume_utilization: 0.08,
+  loaded: [],
+  unloaded: [],
+  validation_passed: true,
+  validation_errors: [],
+  containers: [
+    {
+      container_id: "Q7-001",
+      container_type: "Q7",
+      loaded_count: 2,
+      unloaded_count: 0,
+      used_volume: 80000,
+      uld_volume: 1000000,
+      volume_utilization: 0.08,
+      validation_passed: true,
+      placements: [
+        { box_id: "BAR-X", instance_id: "BAR-X-001", x: 0, y: 0, z: 0, length: 100, width: 40, height: 20 },
+        { box_id: "BAR-Y", instance_id: "BAR-Y-001", x: 60, y: 0, z: 20, length: 40, width: 100, height: 20 },
+      ],
+    },
+  ],
+};
+
+const html = context.buildHtmlReport(result, input, "2026-06-23T01:02:03.000Z");
+const mapStart = html.indexOf("俯视位置图");
+const topViewStart = html.indexOf("3D 俯视图", mapStart);
+const mapHtml = html.slice(mapStart, topViewStart);
+const pileMatch = mapHtml.match(/<g class="position-pile"[^>]*data-pile-index="1"[\s\S]*?<\/g>/);
+if (!pileMatch) {
+  throw new Error(`missing first pile: ${mapHtml}`);
+}
+const pileHtml = pileMatch[0];
+for (const expected of [
+  "data-pile-count=\"2\"",
+  "data-pile-width=\"100\"",
+  "data-pile-height=\"100\"",
+  "position-pile-footprint",
+  "data-footprint-width=\"100\" data-footprint-height=\"40\"",
+  "data-footprint-width=\"40\" data-footprint-height=\"100\"",
+]) {
+  if (!pileHtml.includes(expected)) {
+    throw new Error(`missing L-shaped pile footprint content ${expected}: ${pileHtml}`);
+  }
+}
+if (pileHtml.includes("data-footprint-width=\"100\" data-footprint-height=\"100\"")) {
+  throw new Error(`L-shaped pile should not be filled as its bounding rectangle: ${pileHtml}`);
 }
 """
         completed = subprocess.run(

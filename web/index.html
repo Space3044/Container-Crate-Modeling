@@ -103,7 +103,10 @@
           <span class="panel-kicker">Result</span>
           <h2 id="overview-title">计算结果</h2>
           <p>总体装载情况与最近的计算记录。</p>
-          <button id="exportExcelButton" type="button" class="secondary-button small-button">导出 XLSX</button>
+          <div class="export-actions" aria-label="导出结果">
+            <button id="exportExcelButton" type="button" class="secondary-button small-button">导出 XLSX</button>
+            <button id="exportHtmlButton" type="button" class="secondary-button small-button">导出 HTML</button>
+          </div>
         </div>
         <div id="summaryCards" class="summary-grid"></div>
         <div class="result-section">

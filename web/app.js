@@ -200,6 +200,7 @@ function cacheElements() {
   elements.summaryCards = document.getElementById("summaryCards");
   elements.historyList = document.getElementById("historyList");
   elements.exportExcelButton = document.getElementById("exportExcelButton");
+  elements.exportHtmlButton = document.getElementById("exportHtmlButton");
   elements.loadedList = document.getElementById("loadedList");
   elements.unloadedList = document.getElementById("unloadedList");
   elements.activeContainerStats = document.getElementById("activeContainerStats");
@@ -222,6 +223,9 @@ function bindEvents() {
   }
   if (elements.exportExcelButton) {
     elements.exportExcelButton.addEventListener("click", exportExcel);
+  }
+  if (elements.exportHtmlButton) {
+    elements.exportHtmlButton.addEventListener("click", exportHtmlReport);
   }
   elements.calculateButton.addEventListener("click", () => calculatePacking());
   elements.containerSelector.addEventListener("change", () => selectContainer(elements.containerSelector.value));
@@ -434,8 +438,24 @@ function exportExcel() {
   }
 }
 
+function exportHtmlReport() {
+  try {
+    clearError();
+    if (!state.result) {
+      throw new Error("请先计算装箱结果后再导出 HTML");
+    }
+    downloadHtmlReport(buildHtmlReport(state.result, state.input, currentExportCreatedAt()), buildHtmlFileName(state.result, currentExportCreatedAt()));
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
 function buildExcelWorkbook(result, input = null) {
   return buildXlsxWorkbook(buildWorkbookSheets(result, input));
+}
+
+function buildHtmlFileName(result, createdAt) {
+  return `${formatExportTimestamp(createdAt)}-装载率${formatExportUtilization(result?.volume_utilization)}.html`;
 }
 
 function buildExcelFileName(result, createdAt) {
@@ -463,6 +483,1500 @@ function formatExportTimestamp(value) {
 
 function formatExportUtilization(value) {
   return `${(Number(value ?? 0) * 100).toFixed(2)}%`;
+}
+
+const HTML_REPORT_SVG_WIDTH = 680;
+const HTML_REPORT_SVG_HEIGHT = 320;
+
+function buildHtmlReport(result, input = null, createdAt = new Date().toISOString()) {
+  const containers = resultContainersForExport(result);
+  const exportInput = input ? normalizeInput(input) : { containers: [], boxes: [] };
+  const inputBoxById = new Map((exportInput.boxes ?? []).map((box) => [box.id, box]));
+  const reportSceneData = buildHtmlReportSceneData(containers, exportInput);
+  const sheets = buildWorkbookSheets(result, exportInput);
+  const sheetPages = sheets.map((sheet, index) => ({
+    id: htmlSheetId(index),
+    name: sheet.name,
+    active: index === 0,
+    content:
+      sheet.name === "ULD 可视化"
+        ? buildHtmlVisualizationSheetPage(containers, exportInput, inputBoxById)
+        : buildHtmlWorkbookSheetContent(sheet),
+  }));
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ULD 装载报告</title>
+  <style>${htmlReportStyles()}</style>
+</head>
+<body>
+  <main class="report">
+    <header class="report-header">
+      <div>
+        <p class="kicker">ULD Packing Report</p>
+        <h1>ULD 装载报告</h1>
+        <p class="meta">导出时间 ${escapeHtml(formatHtmlDateTime(createdAt))}</p>
+      </div>
+      <div class="status ${result.validation_passed ? "passed" : "failed"}">${result.validation_passed ? "校验通过" : "校验失败"}</div>
+    </header>
+
+    <nav class="sheet-tabs" aria-label="报告分页">
+      ${sheetPages
+        .map((page) => `<button class="sheet-tab${page.active ? " active" : ""}" type="button" data-target="${page.id}">${escapeHtml(page.name)}</button>`)
+        .join("")}
+    </nav>
+
+    <div class="sheet-pages">
+      ${sheetPages
+        .map(
+          (page) => `<section id="${page.id}" class="sheet-page${page.active ? " active" : ""}" data-sheet-name="${escapeHtml(page.name)}">
+        <h2>${escapeHtml(page.name)}</h2>
+        ${page.content}
+      </section>`,
+        )
+        .join("\n")}
+    </div>
+  </main>
+  <script>${htmlReportScript(reportSceneData)}</script>
+</body>
+</html>`;
+}
+
+function htmlSheetId(index) {
+  return `sheet-${index + 1}`;
+}
+
+function buildHtmlWorkbookSheetContent(sheet) {
+  return `<div class="table-wrap"><table><tbody>${sheet.rows
+    .map((row, rowIndex) => {
+      const tag = rowIndex === 0 ? "th" : "td";
+      return `<tr>${row.map((cell) => `<${tag}>${htmlCellContent(cell)}</${tag}>`).join("")}</tr>`;
+    })
+    .join("")}</tbody></table></div>`;
+}
+
+function buildHtmlVisualizationSheetPage(containers, exportInput, inputBoxById) {
+  const profileById = new Map((exportInput.containers ?? []).map((container) => [container.id, container]));
+  return `<div class="visualization-toolbar">
+    <label>查看 ULD
+      <select data-uld-filter>
+        <option value="">全部 ULD</option>
+        ${containers
+          .map((container) => {
+            const containerId = container.container_id ?? container.uld_id ?? "";
+            return `<option value="${escapeAttribute(containerId)}">${escapeHtml(containerId)}</option>`;
+          })
+          .join("")}
+      </select>
+    </label>
+  </div>
+  <div class="visualization-pages">${containers
+    .map((container) => buildHtmlReportContainerSection(container, htmlReportProfileInput(container, profileById.get(container.container_type)), inputBoxById))
+    .join("\n")}</div>`;
+}
+
+function buildHtmlReportContainerSection(container, profileInput, inputBoxById) {
+  const containerId = container.container_id ?? container.uld_id ?? "";
+  const placements = container.placements ?? [];
+  return `<article class="uld-section" data-uld-section="${escapeAttribute(containerId)}">
+    <div class="section-title">
+      <h2>ULD ${escapeHtml(containerId)}</h2>
+      <div class="section-meta">
+        <span>类型 ${escapeHtml(container.container_type ?? container.uld_id ?? "")}</span>
+        <span>已装 ${escapeHtml(container.loaded_count ?? placements.length)}</span>
+        <span>装载率 ${escapeHtml(formatPercent(container.volume_utilization))}</span>
+        <span>已用体积 ${escapeHtml(formatNumber(container.used_volume ?? 0))}</span>
+      </div>
+    </div>
+    <div class="load-summary">
+      <h3>装载清单</h3>
+      ${htmlSummaryList(htmlPlacementTypeSummaries(placements).map((summary) => [summary, ""]), "暂无已装箱")}
+    </div>
+    <div class="top-views-grid">
+      <article class="view-card">
+        <div class="view-card-heading">
+          <h3>俯视位置图</h3>
+          ${placements.length ? `<button class="position-map-label-toggle" type="button" data-position-label-toggle aria-pressed="true">隐藏标识</button>` : ""}
+        </div>
+        ${buildHtmlTopPositionMap(placements, profileInput)}
+      </article>
+      ${buildHtmlTopProjectionCanvas(containerId)}
+    </div>
+    <div class="scene-row">
+      ${buildHtmlInteractiveSceneCanvas(containerId)}
+    </div>
+    <h3>本 ULD 坐标</h3>
+    ${htmlTable(
+      ["实例", "箱子 ID", "尺寸", "x", "y", "z"],
+      placements.map((placement) => [
+        placement.instance_id,
+        htmlBoxLabel(placement, inputBoxById),
+        htmlPlacementDimensions(placement),
+        `${formatNumber(placement.x)} ~ ${formatNumber(placement.x + placement.length)}`,
+        `${formatNumber(placement.y)} ~ ${formatNumber(placement.y + placement.width)}`,
+        `${formatNumber(placement.z)} ~ ${formatNumber(placement.z + placement.height)}`,
+      ]),
+    )}
+  </article>`;
+}
+
+function buildHtmlTopProjectionCanvas(containerId) {
+  return `<article class="view-card">
+    <div class="view-card-heading">
+      <h3>3D 俯视图</h3>
+    </div>
+    <canvas class="projection-canvas" data-report-top-view="${escapeAttribute(containerId)}" width="680" height="320" aria-label="${escapeAttribute(containerId)} 3D 俯视图"></canvas>
+  </article>`;
+}
+
+function buildHtmlInteractiveSceneCanvas(containerId) {
+  return `<article class="view-card">
+    <h3>交互 3D 视图</h3>
+    <div class="scene-view-controls" aria-label="3D 视图控制">
+      <button type="button" data-scene-view="isometric">等轴</button>
+      <button type="button" data-scene-view="top">俯视</button>
+      <button type="button" data-scene-view="side">侧视</button>
+      <button type="button" data-scene-view="section">截面</button>
+      <button type="button" data-scene-reset>重置</button>
+    </div>
+    <div class="report-scene-stage">
+      <canvas class="scene-canvas" data-report-scene="${escapeAttribute(containerId)}" width="960" height="540" aria-label="${escapeAttribute(containerId)} 交互 3D 视图"></canvas>
+      <div class="scene-tooltip" data-report-tooltip role="status" aria-label="悬停箱子信息"></div>
+    </div>
+    <div class="scene-selection muted" data-report-selection>点击 3D 视图中的箱子查看位置范围。</div>
+  </article>`;
+}
+
+function buildHtmlReportSceneData(containers, exportInput) {
+  const profileById = new Map((exportInput.containers ?? []).map((container) => [container.id, container]));
+  return containers.map((container) => {
+    const containerId = container.container_id ?? container.uld_id ?? "";
+    const profileInput = htmlReportProfileInput(container, profileById.get(container.container_type));
+    const dimensions = getSceneDimensions(profileInput);
+    return {
+      id: containerId,
+      dimensions,
+      crossSection: profileInput.uld.cross_section,
+      placements: (container.placements ?? []).map((placement) => ({
+        box_id: placement.box_id,
+        instance_id: placement.instance_id,
+        x: Number(placement.x),
+        y: Number(placement.y),
+        z: Number(placement.z),
+        length: Number(placement.length),
+        width: Number(placement.width),
+        height: Number(placement.height),
+      })),
+    };
+  });
+}
+
+function buildHtmlProjectionSvg(container, profileInput, viewKey) {
+  const placements = container.placements ?? [];
+  const dimensions = getSceneDimensions(profileInput);
+  const config = htmlProjectionConfig(viewKey, dimensions);
+  const mapper = createPlaneMapper({ width: HTML_REPORT_SVG_WIDTH, height: HTML_REPORT_SVG_HEIGHT }, config.worldWidth, config.worldHeight, config.horizontalAxis, config.verticalAxis);
+  const frame = viewKey === "section"
+    ? htmlSectionPolygon(profileInput.uld.cross_section, mapper)
+    : htmlSvgRect(mapper.rectToScreen(0, 0, config.worldWidth, config.worldHeight), "uld-frame", "", "none");
+  const boxes = placements.map((placement) => htmlPlacementRect(placement, mapper, viewKey)).join("\n");
+  return `<article class="view-card">
+    <h3>${escapeHtml(config.title)}</h3>
+    <svg viewBox="0 0 ${HTML_REPORT_SVG_WIDTH} ${HTML_REPORT_SVG_HEIGHT}" role="img" aria-label="${escapeXmlAttribute(config.title)}">
+      <rect class="svg-bg" x="0" y="0" width="${HTML_REPORT_SVG_WIDTH}" height="${HTML_REPORT_SVG_HEIGHT}" rx="10"></rect>
+      ${htmlGridLines(mapper, config.worldWidth, config.worldHeight)}
+      ${frame}
+      ${boxes}
+      <text class="axis-label" x="${HTML_REPORT_SVG_WIDTH - 86}" y="${HTML_REPORT_SVG_HEIGHT - 14}">${escapeXmlText(config.horizontalLabel)}</text>
+      <text class="axis-label" x="16" y="24">${escapeXmlText(config.verticalLabel)}</text>
+    </svg>
+  </article>`;
+}
+
+function buildHtmlTopPositionMap(placements, profileInput = null) {
+  if (!placements.length) {
+    return `<p class="muted">暂无已装箱</p>`;
+  }
+  const dimensions = profileInput ? getSceneDimensions(profileInput) : htmlTopMapFallbackDimensions(placements);
+  const mapper = createPlaneMapper({ width: HTML_REPORT_SVG_WIDTH, height: HTML_REPORT_SVG_HEIGHT }, dimensions.length, dimensions.maxY, "x", "y");
+  const piles = buildHtmlTopPositionPiles(placements);
+  const pileItems = piles.map((pile, index) => htmlTopPositionPileSvg(pile, mapper, index));
+  const pileRects = pileItems.map((item) => item.rect).join("\n");
+  const pileLabels = pileItems.map((item) => item.label).join("\n");
+  return `<div class="position-map-svg-wrap">
+    <svg class="position-map-svg" data-position-map viewBox="0 0 ${HTML_REPORT_SVG_WIDTH} ${HTML_REPORT_SVG_HEIGHT}" role="img" aria-label="按实际 x/y 坐标绘制的俯视位置图">
+      <rect class="svg-bg" x="0" y="0" width="${HTML_REPORT_SVG_WIDTH}" height="${HTML_REPORT_SVG_HEIGHT}" rx="10"></rect>
+      ${htmlGridLines(mapper, dimensions.length, dimensions.maxY)}
+      ${htmlSvgRect(mapper.rectToScreen(0, 0, dimensions.length, dimensions.maxY), "uld-frame", "", "none")}
+      <g class="position-pile-layer">
+        ${pileRects}
+      </g>
+      <g class="position-pile-label-layer">
+        ${pileLabels}
+      </g>
+      <text class="axis-label" x="${HTML_REPORT_SVG_WIDTH - 86}" y="${HTML_REPORT_SVG_HEIGHT - 14}">x 长度</text>
+      <text class="axis-label" x="16" y="24">y 宽度</text>
+    </svg>
+  </div>`;
+}
+
+function htmlTopMapFallbackDimensions(placements) {
+  return {
+    length: Math.max(1, ...placements.map((placement) => Number(placement.x) + Number(placement.length))),
+    maxY: Math.max(1, ...placements.map((placement) => Number(placement.y) + Number(placement.width))),
+  };
+}
+
+function buildHtmlTopPositionPiles(placements) {
+  const piles = [];
+  const normalizedPlacements = placements.map((placement) => ({
+    ...placement,
+    x: Number(placement.x),
+    y: Number(placement.y),
+    z: Number(placement.z),
+    length: Number(placement.length),
+    width: Number(placement.width),
+    height: Number(placement.height),
+  }));
+  normalizedPlacements.forEach((placement) => {
+    const overlappingPiles = piles.filter((pile) => pile.placements.some((item) => placementFootprintsOverlap(placement, item)));
+    const targetPile = overlappingPiles[0] ?? createPlacementStack(placement);
+    overlappingPiles.slice(1).forEach((pile) => {
+      targetPile.placements.push(...pile.placements);
+      targetPile.minX = Math.min(targetPile.minX, pile.minX);
+      targetPile.maxX = Math.max(targetPile.maxX, pile.maxX);
+      targetPile.minY = Math.min(targetPile.minY, pile.minY);
+      targetPile.maxY = Math.max(targetPile.maxY, pile.maxY);
+      piles.splice(piles.indexOf(pile), 1);
+    });
+    if (overlappingPiles.length === 0) {
+      piles.push(targetPile);
+    }
+    targetPile.placements.push(placement);
+    targetPile.minX = Math.min(targetPile.minX, placement.x);
+    targetPile.maxX = Math.max(targetPile.maxX, placement.x + placement.length);
+    targetPile.minY = Math.min(targetPile.minY, placement.y);
+    targetPile.maxY = Math.max(targetPile.maxY, placement.y + placement.width);
+  });
+  return piles.sort((first, second) => first.minY - second.minY || first.minX - second.minX);
+}
+
+function htmlTopPositionPileSvg(pile, mapper, index) {
+  const pileRect = mapper.rectToScreen(pile.minX, pile.minY, pile.maxX - pile.minX, pile.maxY - pile.minY);
+  const placements = htmlTopPilePlacementsTopDown(pile.placements);
+  const footprintRects = htmlTopPileFootprints(placements).map((footprint) => ({
+    footprint,
+    rect: mapper.rectToScreen(footprint.x, footprint.y, footprint.length, footprint.width),
+  }));
+  const color = colorForBox(placements[0]?.box_id ?? "");
+  const labelLines = htmlTopPileLayerTypeSummariesTopDown(placements);
+  const title = [
+    `摞 ${index + 1}`,
+    `x ${formatNumber(pile.minX)}-${formatNumber(pile.maxX)}`,
+    `y ${formatNumber(pile.minY)}-${formatNumber(pile.maxY)}`,
+    ...labelLines,
+  ].join("\n");
+  const text = htmlTopPileText(htmlTopPileLabelRect(footprintRects, pileRect), labelLines);
+  const attributes = `data-pile-index="${index + 1}" data-pile-count="${placements.length}" data-pile-x="${escapeXmlAttribute(formatNumber(pile.minX))}" data-pile-y="${escapeXmlAttribute(formatNumber(pile.minY))}" data-pile-width="${escapeXmlAttribute(formatNumber(pile.maxX - pile.minX))}" data-pile-height="${escapeXmlAttribute(formatNumber(pile.maxY - pile.minY))}" data-pile-members="${escapeXmlAttribute(placements.map((placement) => placement.instance_id).join(","))}" data-placement-x="${escapeXmlAttribute(formatNumber(placements[0]?.x ?? pile.minX))}" data-placement-y="${escapeXmlAttribute(formatNumber(placements[0]?.y ?? pile.minY))}" data-placement-z="${escapeXmlAttribute(formatNumber(placements[0]?.z ?? 0))}"`;
+  const actionLabel = `选中摞 ${index + 1}，${placements.length} 个箱子，x ${formatNumber(pile.minX)}-${formatNumber(pile.maxX)}，y ${formatNumber(pile.minY)}-${formatNumber(pile.maxY)}`;
+  const footprintSvg = footprintRects.map(({ footprint, rect }) => `<rect class="position-pile-rect position-pile-footprint" data-footprint-x="${escapeXmlAttribute(formatNumber(footprint.x))}" data-footprint-y="${escapeXmlAttribute(formatNumber(footprint.y))}" data-footprint-width="${escapeXmlAttribute(formatNumber(footprint.length))}" data-footprint-height="${escapeXmlAttribute(formatNumber(footprint.width))}" data-footprint-count="${footprint.count}" x="${formatSvgNumber(rect.x)}" y="${formatSvgNumber(rect.y)}" width="${formatSvgNumber(rect.width)}" height="${formatSvgNumber(rect.height)}" fill="${rgbaColor(color, 0.68)}" stroke="${rgbaColor(lightenColor(color, 0.38), 0.98)}"></rect>`).join("\n    ");
+  return {
+    rect: `<g class="position-pile" ${attributes} role="button" tabindex="0" aria-label="${escapeXmlAttribute(actionLabel)}">
+    <title>${escapeXmlText(title)}</title>
+    ${footprintSvg}
+  </g>`,
+    label: `<g class="position-pile-label-item" ${attributes}>
+    ${text}
+  </g>`,
+  };
+}
+
+function htmlTopPileFootprints(placements) {
+  const footprintsByKey = new Map();
+  placements.forEach((placement) => {
+    const footprint = {
+      x: Number(placement.x),
+      y: Number(placement.y),
+      length: Number(placement.length),
+      width: Number(placement.width),
+    };
+    const key = [footprint.x, footprint.y, footprint.length, footprint.width].map(formatNumber).join("|");
+    const existing = footprintsByKey.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      footprintsByKey.set(key, { ...footprint, count: 1 });
+    }
+  });
+  return [...footprintsByKey.values()].sort((first, second) =>
+    second.length * second.width - first.length * first.width
+    || first.y - second.y
+    || first.x - second.x
+    || first.length - second.length
+    || first.width - second.width);
+}
+
+function htmlTopPileLabelRect(footprintRects, fallbackRect) {
+  return footprintRects.reduce((largest, current) => {
+    const largestArea = largest.width * largest.height;
+    const currentArea = current.rect.width * current.rect.height;
+    return currentArea > largestArea ? current.rect : largest;
+  }, fallbackRect);
+}
+
+function htmlTopPilePlacementsTopDown(placements) {
+  return [...placements].sort((first, second) => (Number(second.z) + Number(second.height)) - (Number(first.z) + Number(first.height)) || Number(second.z) - Number(first.z));
+}
+
+function htmlTopPileLayerTypeSummariesTopDown(placements) {
+  const byTop = new Map();
+  placements.forEach((placement) => {
+    const layerTop = Number(placement.z) + Number(placement.height);
+    const layer = byTop.get(layerTop) ?? [];
+    layer.push(placement);
+    byTop.set(layerTop, layer);
+  });
+  return [...byTop.entries()]
+    .sort((first, second) => second[0] - first[0])
+    .flatMap(([, layer]) => htmlPlacementTypeSummaries(layer));
+}
+
+function htmlTopPileText(rect, lines) {
+  if (rect.width < 54 || rect.height < 24 || lines.length === 0) {
+    return "";
+  }
+  const maxLines = Math.max(1, Math.floor((rect.height - 10) / 14));
+  const visibleLines = lines.slice(0, maxLines);
+  const renderedLines = visibleLines.length < lines.length
+    ? [...visibleLines.slice(0, Math.max(0, maxLines - 1)), `+${lines.length - visibleLines.length + 1}`]
+    : visibleLines;
+  const labelWidth = Math.min(rect.width - 8, Math.max(...renderedLines.map((line) => line.length)) * 7.2 + 10);
+  const labelHeight = renderedLines.length * 14 + 8;
+  const labelX = rect.x + 4;
+  const labelY = rect.y + 5;
+  return `<rect class="position-pile-label-bg" x="${formatSvgNumber(labelX)}" y="${formatSvgNumber(labelY)}" width="${formatSvgNumber(labelWidth)}" height="${formatSvgNumber(labelHeight)}" rx="4"></rect>
+  <text class="position-pile-label" x="${formatSvgNumber(rect.x + 8)}" y="${formatSvgNumber(rect.y + 19)}">${renderedLines
+    .map((line, index) => `<tspan x="${formatSvgNumber(rect.x + 8)}" dy="${index === 0 ? 0 : 14}">${escapeXmlText(line)}</tspan>`)
+    .join("")}</text>`;
+}
+
+function htmlProjectionConfig(viewKey, dimensions) {
+  if (viewKey === "top") {
+    return { title: "俯视 X-Y", worldWidth: dimensions.length, worldHeight: dimensions.maxY, horizontalAxis: "x", verticalAxis: "y", horizontalLabel: "x 长度", verticalLabel: "y 宽度" };
+  }
+  if (viewKey === "side") {
+    return { title: "侧视 X-Z", worldWidth: dimensions.length, worldHeight: dimensions.maxZ, horizontalAxis: "x", verticalAxis: "z", horizontalLabel: "x 长度", verticalLabel: "z 高度" };
+  }
+  return { title: "截面 Y-Z", worldWidth: dimensions.maxY, worldHeight: dimensions.maxZ, horizontalAxis: "y", verticalAxis: "z", horizontalLabel: "y 宽度", verticalLabel: "z 高度" };
+}
+
+function htmlReportProfileInput(container, profile) {
+  if (profile?.length && Array.isArray(profile.cross_section)) {
+    return {
+      uld: {
+        id: profile.id ?? container.container_type ?? container.container_id ?? "ULD",
+        length: Number(profile.length),
+        cross_section: profile.cross_section,
+      },
+    };
+  }
+  const placements = container.placements ?? [];
+  const length = Math.max(1, ...placements.map((placement) => Number(placement.x) + Number(placement.length)));
+  const maxY = Math.max(1, ...placements.map((placement) => Number(placement.y) + Number(placement.width)));
+  const maxZ = Math.max(1, ...placements.map((placement) => Number(placement.z) + Number(placement.height)));
+  return {
+    uld: {
+      id: container.container_id ?? container.uld_id ?? "ULD",
+      length,
+      cross_section: [[0, 0], [maxY, 0], [maxY, maxZ], [0, maxZ]],
+    },
+  };
+}
+
+function htmlPlacementRect(placement, mapper, viewKey) {
+  const rect = projectionRectForPlacement(mapper, placement, viewKey);
+  const color = colorForBox(placement.box_id);
+  const label = rect.width >= 52 && rect.height >= 20
+    ? `<text class="box-label" x="${rect.x + 5}" y="${rect.y + 15}">${escapeXmlText(placement.box_id)}</text>`
+    : "";
+  return `${htmlSvgRect(
+    rect,
+    "box-rect",
+    `fill="${rgbaColor(color, 0.7)}" stroke="${rgbaColor(lightenColor(color, 0.38), 0.98)}" data-instance-id="${escapeXmlAttribute(placement.instance_id ?? "")}" data-placement-x="${escapeXmlAttribute(formatNumber(placement.x))}" data-placement-y="${escapeXmlAttribute(formatNumber(placement.y))}" data-placement-z="${escapeXmlAttribute(formatNumber(placement.z))}"`,
+    "",
+  )}${label}`;
+}
+
+function htmlSvgRect(rect, className, extraAttributes, fallbackFill) {
+  const fill = fallbackFill ? ` fill="${fallbackFill}"` : "";
+  return `<rect class="${className}" x="${formatSvgNumber(rect.x)}" y="${formatSvgNumber(rect.y)}" width="${formatSvgNumber(rect.width)}" height="${formatSvgNumber(rect.height)}"${fill} ${extraAttributes}></rect>`;
+}
+
+function htmlSectionPolygon(points, mapper) {
+  const polygonPoints = points
+    .map(([y, z]) => {
+      const point = mapper.toScreen(y, z);
+      return `${formatSvgNumber(point.x)},${formatSvgNumber(point.y)}`;
+    })
+    .join(" ");
+  return `<polygon class="uld-frame" points="${polygonPoints}"></polygon>`;
+}
+
+function htmlGridLines(mapper, worldWidth, worldHeight) {
+  const xStep = htmlGridStep(worldWidth);
+  const yStep = htmlGridStep(worldHeight);
+  const lines = [];
+  for (let x = 0; x <= worldWidth; x += xStep) {
+    const start = mapper.toScreen(x, 0);
+    const end = mapper.toScreen(x, worldHeight);
+    lines.push(`<line class="grid-line" x1="${formatSvgNumber(start.x)}" y1="${formatSvgNumber(start.y)}" x2="${formatSvgNumber(end.x)}" y2="${formatSvgNumber(end.y)}"></line>`);
+  }
+  for (let y = 0; y <= worldHeight; y += yStep) {
+    const start = mapper.toScreen(0, y);
+    const end = mapper.toScreen(worldWidth, y);
+    lines.push(`<line class="grid-line" x1="${formatSvgNumber(start.x)}" y1="${formatSvgNumber(start.y)}" x2="${formatSvgNumber(end.x)}" y2="${formatSvgNumber(end.y)}"></line>`);
+  }
+  return lines.join("\n");
+}
+
+function htmlGridStep(value) {
+  const target = Math.max(1, Number(value) / 6);
+  const magnitude = 10 ** Math.floor(Math.log10(target));
+  const normalized = target / magnitude;
+  if (normalized <= 2) {
+    return 2 * magnitude;
+  }
+  if (normalized <= 5) {
+    return 5 * magnitude;
+  }
+  return 10 * magnitude;
+}
+
+function htmlMetricCard(label, value) {
+  return `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function htmlCellContent(cell) {
+  return escapeHtml(excelCellValue(cell)).replace(/\r\n|\r|\n/g, "<br>");
+}
+
+function htmlSummaryList(items, emptyText) {
+  if (!items.length) {
+    return `<p class="muted">${escapeHtml(emptyText)}</p>`;
+  }
+  return `<div class="chip-list">${items
+    .map(([label, value]) => `<span class="chip">${escapeHtml(label)}${value !== "" ? ` <strong>${escapeHtml(value)}</strong>` : ""}</span>`)
+    .join("")}</div>`;
+}
+
+function htmlPlacementTypeSummaries(placements) {
+  const counter = new Map();
+  placements.forEach((placement) => {
+    const size = [placement.length, placement.width, placement.height].map(formatNumber).join("*");
+    const key = `${placement.box_id}（${size}）`;
+    counter.set(key, (counter.get(key) ?? 0) + 1);
+  });
+  return [...counter.entries()].map(([label, quantity]) => `${label}*${quantity}`);
+}
+
+function htmlTable(headers, rows) {
+  if (!rows.length) {
+    return `<p class="muted">暂无</p>`;
+  }
+  return `<div class="table-wrap"><table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead><tbody>${rows
+    .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`)
+    .join("")}</tbody></table></div>`;
+}
+
+function htmlBoxLabel(item, inputBoxById) {
+  const dimensions = boxItemDimensions(item, inputBoxById.get(item.box_id));
+  return dimensions ? `${item.box_id} (${dimensions})` : item.box_id;
+}
+
+function htmlPlacementDimensions(placement) {
+  return [placement.length, placement.width, placement.height].map(formatNumber).join(" × ");
+}
+
+function formatSvgNumber(value) {
+  return Number(value).toFixed(2).replace(/\.?0+$/, "");
+}
+
+function formatHtmlDateTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value ?? "") : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function safeJsonForHtmlScript(value) {
+  return JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+function htmlReportScript(reportSceneData = []) {
+  return `
+    (() => {
+      const reportSceneData = ${safeJsonForHtmlScript(reportSceneData)};
+      const HTML_REPORT_AXIS_EXTENSION_FACTOR = 1.18;
+      const HTML_REPORT_SCENE_SAFE_PADDING = 72;
+      const tabs = [...document.querySelectorAll(".sheet-tab")];
+      const pages = [...document.querySelectorAll(".sheet-page")];
+      const sceneById = new Map(reportSceneData.map((scene) => [scene.id, scene]));
+      const sceneStateById = new Map();
+      const activate = (id) => {
+        tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.target === id));
+        pages.forEach((page) => page.classList.toggle("active", page.id === id));
+        redrawHtmlReportVisibleScenes();
+      };
+      tabs.forEach((tab) => tab.addEventListener("click", () => activate(tab.dataset.target)));
+      const uldFilter = document.querySelector("[data-uld-filter]");
+      const uldSections = [...document.querySelectorAll("[data-uld-section]")];
+      if (uldFilter) {
+        uldFilter.addEventListener("change", () => {
+          const selected = uldFilter.value;
+          uldSections.forEach((section) => {
+            section.hidden = selected !== "" && section.dataset.uldSection !== selected;
+          });
+          redrawHtmlReportVisibleScenes();
+        });
+      }
+      document.querySelectorAll("[data-report-scene]").forEach((canvas) => initHtmlReportScene(canvas, stateForHtmlReportScene(sceneById.get(canvas.dataset.reportScene))));
+      document.querySelectorAll("[data-report-top-view]").forEach((canvas) => initHtmlReportTopView(canvas, stateForHtmlReportScene(sceneById.get(canvas.dataset.reportTopView))));
+      document.querySelectorAll("[data-position-map]").forEach(initHtmlReportPositionMap);
+      document.querySelectorAll("[data-position-label-toggle]").forEach(initHtmlReportPositionMapLabelToggle);
+      if (location.hash) {
+        const id = location.hash.slice(1);
+        if (pages.some((page) => page.id === id)) {
+          activate(id);
+        }
+      }
+
+      function stateForHtmlReportScene(scene) {
+        if (!scene) {
+          return null;
+        }
+        let state = sceneStateById.get(scene.id);
+        if (!state) {
+          state = {
+            scene,
+            yaw: -0.72,
+            pitch: 0.58,
+            zoom: 1,
+            panX: 0,
+            panY: 10,
+            pointer: null,
+            hitRegions: [],
+            topHitRegions: [],
+            hoveredInstanceId: null,
+            selectedInstanceId: null,
+            sceneCanvas: null,
+            topCanvas: null,
+            tooltip: null,
+            selection: null,
+          };
+          sceneStateById.set(scene.id, state);
+        }
+        return state;
+      }
+
+      function redrawHtmlReportVisibleScenes() {
+        sceneStateById.forEach((state) => redrawHtmlReportSceneState(state));
+      }
+
+      function redrawHtmlReportSceneState(state) {
+        if (state.sceneCanvas) {
+          drawHtmlReportScene(state.sceneCanvas, state.scene, state);
+        }
+        if (state.topCanvas) {
+          drawHtmlReportTopProjection(state.topCanvas, state);
+        }
+        renderHtmlReportSceneSelection(state);
+      }
+
+      function initHtmlReportScene(canvas, state) {
+        if (!state || !canvas.getContext) {
+          return;
+        }
+        state.sceneCanvas = canvas;
+        const draw = () => redrawHtmlReportSceneState(state);
+        const viewCard = canvas.closest(".view-card");
+        state.tooltip = viewCard?.querySelector("[data-report-tooltip]") ?? null;
+        state.selection = viewCard?.querySelector("[data-report-selection]") ?? null;
+        viewCard?.querySelectorAll("[data-scene-view]").forEach((button) => {
+          button.addEventListener("click", () => {
+            setHtmlReportSceneView(state, button.dataset.sceneView);
+            draw();
+          });
+        });
+        viewCard?.querySelector("[data-scene-reset]")?.addEventListener("click", () => {
+          resetHtmlReportSceneView(state);
+          draw();
+        });
+        canvas.addEventListener("pointerdown", (event) => {
+          state.pointer = { x: event.clientX, y: event.clientY, mode: event.shiftKey || event.button === 2 ? "pan" : "rotate", moved: false };
+          hideHtmlReportSceneTooltip(state);
+          canvas.setPointerCapture?.(event.pointerId);
+        });
+        canvas.addEventListener("pointermove", (event) => {
+          if (!state.pointer) {
+            updateHtmlReportSceneHover(state, event);
+            return;
+          }
+          const dx = event.clientX - state.pointer.x;
+          const dy = event.clientY - state.pointer.y;
+          state.pointer.x = event.clientX;
+          state.pointer.y = event.clientY;
+          if (Math.abs(dx) + Math.abs(dy) > 2) {
+            state.pointer.moved = true;
+          }
+          if (state.pointer.mode === "pan") {
+            state.panX += dx;
+            state.panY += dy;
+          } else {
+            state.yaw += dx * 0.008;
+            state.pitch += dy * 0.008;
+          }
+          draw();
+        });
+        const endPointer = (event) => {
+          const pointer = state.pointer;
+          if (state.pointer && event?.pointerId !== undefined) {
+            canvas.releasePointerCapture?.(event.pointerId);
+          }
+          if (pointer && !pointer.moved && event?.type === "pointerup") {
+            selectHtmlReportScenePlacement(state, event);
+          }
+          state.pointer = null;
+        };
+        canvas.addEventListener("pointerup", endPointer);
+        canvas.addEventListener("pointerleave", (event) => {
+          endPointer(event);
+          clearHtmlReportSceneHover(state);
+        });
+        canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+        canvas.addEventListener("wheel", (event) => {
+          event.preventDefault();
+          state.zoom = Math.max(0.25, Math.min(4, state.zoom * (event.deltaY > 0 ? 0.9 : 1.1)));
+          draw();
+        }, { passive: false });
+        canvas.addEventListener("dblclick", () => {
+          resetHtmlReportSceneView(state);
+          draw();
+        });
+        window.addEventListener("resize", draw);
+        draw();
+      }
+
+      function initHtmlReportTopView(canvas, state) {
+        if (!state || !canvas.getContext) {
+          return;
+        }
+        state.topCanvas = canvas;
+        canvas.addEventListener("click", (event) => selectHtmlReportTopPlacement(state, event));
+        window.addEventListener("resize", () => redrawHtmlReportSceneState(state));
+        redrawHtmlReportSceneState(state);
+      }
+
+      function initHtmlReportPositionMap(svg) {
+        svg.querySelectorAll(".position-pile").forEach((pile) => {
+          pile.setAttribute("aria-pressed", "false");
+          const selectPile = () => selectHtmlReportPositionPile(svg, pile.dataset.pileIndex);
+          pile.addEventListener("click", selectPile);
+          pile.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              selectPile();
+            }
+          });
+        });
+      }
+
+      function initHtmlReportPositionMapLabelToggle(button) {
+        const viewCard = button.closest(".view-card");
+        const svg = viewCard?.querySelector("[data-position-map]");
+        if (!svg) {
+          return;
+        }
+        let labelsVisible = true;
+        const sync = () => {
+          svg.classList.toggle("position-map-label-hidden", !labelsVisible);
+          button.setAttribute("aria-pressed", labelsVisible ? "true" : "false");
+          button.textContent = labelsVisible ? "隐藏标识" : "显示标识";
+        };
+        button.addEventListener("click", () => {
+          labelsVisible = !labelsVisible;
+          sync();
+        });
+        sync();
+      }
+
+      function selectHtmlReportPositionPile(svg, pileIndex) {
+        const selectedPileIndex = String(pileIndex ?? "");
+        svg.querySelectorAll("[data-pile-index]").forEach((node) => {
+          const isSelected = node.dataset.pileIndex === selectedPileIndex;
+          node.classList.toggle("selected", isSelected);
+          if (node.classList.contains("position-pile")) {
+            node.setAttribute("aria-pressed", isSelected ? "true" : "false");
+          }
+        });
+      }
+
+      function setHtmlReportSceneView(state, view) {
+        const views = {
+          isometric: { yaw: -0.72, pitch: 0.58 },
+          top: { yaw: 0, pitch: 1.5708 },
+          side: { yaw: 0, pitch: 0 },
+          section: { yaw: -1.5708, pitch: 0 },
+        };
+        const next = views[view] ?? views.isometric;
+        state.yaw = next.yaw;
+        state.pitch = next.pitch;
+        state.panX = 0;
+        state.panY = 10;
+      }
+
+      function resetHtmlReportSceneView(state) {
+        state.yaw = -0.72;
+        state.pitch = 0.58;
+        state.zoom = 1;
+        state.panX = 0;
+        state.panY = 10;
+      }
+
+      function drawHtmlReportScene(canvas, scene, state) {
+        const { context, width, height } = setupHtmlReportCanvas(canvas);
+        state.hitRegions = [];
+        context.clearRect(0, 0, width, height);
+        const viewport = htmlReportSceneViewport(width, height, scene.dimensions, state);
+        const projector = (point) => htmlReportProjectPoint(point, scene.dimensions, viewport, state);
+        drawHtmlReportFloorGrid(context, projector, scene.dimensions);
+        drawHtmlReportPrism(context, scene, projector);
+        const faces = scene.placements.flatMap((placement) => htmlReportBoxFaces(placement, state));
+        drawHtmlReportFaces(context, faces, projector, state.hitRegions);
+        drawHtmlReportBoxWireframes(context, scene.placements, projector, state);
+        drawHtmlReportPrismEdges(context, scene, projector);
+        drawHtmlReportAxes(context, scene.dimensions, projector);
+        drawHtmlReportBackgroundText(context, width, height);
+      }
+
+      function setupHtmlReportCanvas(canvas) {
+        const context = canvas.getContext("2d");
+        const bounds = canvas.getBoundingClientRect();
+        const width = Math.max(1, bounds.width || Number(canvas.getAttribute("width")) || canvas.width);
+        const height = Math.max(1, bounds.height || Number(canvas.getAttribute("height")) || canvas.height);
+        const ratio = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(width * ratio);
+        canvas.height = Math.floor(height * ratio);
+        context.setTransform(ratio, 0, 0, ratio, 0, 0);
+        return { context, width, height };
+      }
+
+      function htmlReportSceneViewport(width, height, dimensions, state) {
+        const bounds = htmlReportSceneViewportBounds(dimensions, state);
+        const usableWidth = Math.max(1, width - HTML_REPORT_SCENE_SAFE_PADDING * 2);
+        const usableHeight = Math.max(1, height - HTML_REPORT_SCENE_SAFE_PADDING * 2);
+        const scale = Math.min(usableWidth / Math.max(bounds.width, 1), usableHeight / Math.max(bounds.height, 1)) * state.zoom;
+        return {
+          scale,
+          offsetX: width / 2 + state.panX - ((bounds.minX + bounds.maxX) / 2) * scale,
+          offsetY: height / 2 + state.panY - ((bounds.minY + bounds.maxY) / 2) * scale,
+        };
+      }
+
+      function htmlReportSceneViewportBounds(dimensions, state) {
+        const projected = htmlReportSceneEnvelopePoints(dimensions).map((point) => htmlReportProjectScenePoint(point, dimensions, state));
+        const xs = projected.map((point) => point.x);
+        const ys = projected.map((point) => point.y);
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+        return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
+      }
+
+      function htmlReportSceneEnvelopePoints(dimensions) {
+        return [
+          { x: 0, y: 0, z: 0 },
+          { x: dimensions.length, y: 0, z: 0 },
+          { x: dimensions.length, y: dimensions.maxY, z: 0 },
+          { x: 0, y: dimensions.maxY, z: 0 },
+          { x: 0, y: 0, z: dimensions.maxZ },
+          { x: dimensions.length, y: 0, z: dimensions.maxZ },
+          { x: dimensions.length, y: dimensions.maxY, z: dimensions.maxZ },
+          { x: 0, y: dimensions.maxY, z: dimensions.maxZ },
+          { x: dimensions.length * HTML_REPORT_AXIS_EXTENSION_FACTOR, y: 0, z: 0 },
+          { x: 0, y: dimensions.maxY * HTML_REPORT_AXIS_EXTENSION_FACTOR, z: 0 },
+          { x: 0, y: 0, z: dimensions.maxZ * HTML_REPORT_AXIS_EXTENSION_FACTOR },
+        ];
+      }
+
+      function htmlReportProjectPoint(point, dimensions, viewport, state) {
+        const projected = htmlReportProjectScenePoint(point, dimensions, state);
+        return {
+          x: viewport.offsetX + projected.x * viewport.scale,
+          y: viewport.offsetY + projected.y * viewport.scale,
+          depth: projected.depth,
+        };
+      }
+
+      function htmlReportProjectScenePoint(point, dimensions, state) {
+        const centered = {
+          x: point.x - dimensions.length / 2,
+          y: point.y - dimensions.maxY / 2,
+          z: point.z - dimensions.maxZ / 2,
+        };
+        const cosYaw = Math.cos(state.yaw);
+        const sinYaw = Math.sin(state.yaw);
+        const x1 = centered.x * cosYaw - centered.y * sinYaw;
+        const y1 = centered.x * sinYaw + centered.y * cosYaw;
+        const z1 = centered.z;
+        const cosPitch = Math.cos(state.pitch);
+        const sinPitch = Math.sin(state.pitch);
+        const y2 = y1 * cosPitch - z1 * sinPitch;
+        const z2 = y1 * sinPitch + z1 * cosPitch;
+        return { x: x1, y: -z2, depth: y2 };
+      }
+
+      function drawHtmlReportFloorGrid(context, projector, dimensions) {
+        const floor = [
+          { x: 0, y: 0, z: 0 },
+          { x: dimensions.length, y: 0, z: 0 },
+          { x: dimensions.length, y: dimensions.maxY, z: 0 },
+          { x: 0, y: dimensions.maxY, z: 0 },
+        ];
+        context.save();
+        drawHtmlReportProjectedPolygon(context, floor, projector, {
+          fill: "rgba(15, 23, 42, 0.34)",
+          stroke: "rgba(125, 211, 252, 0.18)",
+          lineWidth: 1.2,
+        });
+        context.strokeStyle = "rgba(148, 163, 184, 0.17)";
+        context.lineWidth = 1;
+        const xStep = htmlReportSceneGridStep(dimensions.length);
+        const yStep = htmlReportSceneGridStep(dimensions.maxY);
+        for (let x = 0; x <= dimensions.length; x += xStep) {
+          drawHtmlReportWorldPolyline(context, [{ x, y: 0, z: 0 }, { x, y: dimensions.maxY, z: 0 }], projector);
+        }
+        for (let y = 0; y <= dimensions.maxY; y += yStep) {
+          drawHtmlReportWorldPolyline(context, [{ x: 0, y, z: 0 }, { x: dimensions.length, y, z: 0 }], projector);
+        }
+        context.strokeStyle = "rgba(226, 232, 240, 0.24)";
+        context.lineWidth = 1.6;
+        drawHtmlReportWorldPolyline(context, [floor[0], floor[1], floor[2], floor[3], floor[0]], projector);
+        context.restore();
+      }
+
+      function htmlReportSceneGridStep(size) {
+        const raw = Math.max(1, Number(size)) / 8;
+        const power = 10 ** Math.floor(Math.log10(raw));
+        const normalized = raw / power;
+        if (normalized <= 2) {
+          return 2 * power;
+        }
+        if (normalized <= 5) {
+          return 5 * power;
+        }
+        return 10 * power;
+      }
+
+      function drawHtmlReportProjectedPolygon(context, points, projector, style) {
+        const projected = points.map(projector);
+        context.beginPath();
+        projected.forEach((point, index) => {
+          if (index === 0) {
+            context.moveTo(point.x, point.y);
+          } else {
+            context.lineTo(point.x, point.y);
+          }
+        });
+        context.closePath();
+        context.fillStyle = style.fill;
+        context.strokeStyle = style.stroke;
+        context.lineWidth = style.lineWidth ?? 1;
+        context.fill();
+        context.stroke();
+      }
+
+      function drawHtmlReportPrism(context, scene, projector) {
+        const faces = htmlReportPrismFaces(scene).map((points) => ({
+          points,
+          fill: "rgba(56, 189, 248, 0.026)",
+          stroke: "rgba(125, 211, 252, 0.16)",
+          lineWidth: 0.8,
+        }));
+        context.save();
+        drawHtmlReportFaces(context, faces, projector);
+        context.restore();
+      }
+
+      function drawHtmlReportPrismEdges(context, scene, projector) {
+        const length = scene.dimensions.length;
+        const front = scene.crossSection.map(([y, z]) => ({ x: 0, y, z }));
+        const back = scene.crossSection.map(([y, z]) => ({ x: length, y, z }));
+        context.save();
+        context.strokeStyle = "rgba(186, 230, 253, 0.92)";
+        context.lineWidth = 2.4;
+        context.shadowColor = "rgba(56, 189, 248, 0.42)";
+        context.shadowBlur = 10;
+        drawHtmlReportWorldPolyline(context, [...front, front[0]], projector);
+        drawHtmlReportWorldPolyline(context, [...back, back[0]], projector);
+        front.forEach((point, index) => drawHtmlReportWorldPolyline(context, [point, back[index]], projector));
+        context.restore();
+      }
+
+      function drawHtmlReportAxes(context, dimensions, projector) {
+        const axes = [
+          [{ x: 0, y: 0, z: 0 }, { x: dimensions.length * HTML_REPORT_AXIS_EXTENSION_FACTOR, y: 0, z: 0 }, "x", "#f87171"],
+          [{ x: 0, y: 0, z: 0 }, { x: 0, y: dimensions.maxY * HTML_REPORT_AXIS_EXTENSION_FACTOR, z: 0 }, "y", "#34d399"],
+          [{ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: dimensions.maxZ * HTML_REPORT_AXIS_EXTENSION_FACTOR }, "z", "#60a5fa"],
+        ];
+        context.save();
+        context.font = "700 14px system-ui, sans-serif";
+        axes.forEach(([start, end, label, color]) => {
+          const a = projector(start);
+          const b = projector(end);
+          context.strokeStyle = color;
+          context.fillStyle = color;
+          context.lineWidth = 3;
+          context.shadowColor = color;
+          context.shadowBlur = 6;
+          drawHtmlReportPolyline(context, [a, b]);
+          drawHtmlReportAxisArrow(context, a, b);
+          context.shadowBlur = 0;
+          const labelWidth = context.measureText(label).width + 14;
+          context.fillStyle = "rgba(15, 23, 42, 0.72)";
+          context.fillRect(b.x + 3, b.y - 22, labelWidth, 22);
+          context.strokeStyle = "rgba(255, 255, 255, 0.22)";
+          context.strokeRect(b.x + 3, b.y - 22, labelWidth, 22);
+          context.fillStyle = color;
+          context.fillText(label, b.x + 10, b.y - 6);
+        });
+        context.restore();
+      }
+
+      function drawHtmlReportAxisArrow(context, start, end) {
+        const angle = Math.atan2(end.y - start.y, end.x - start.x);
+        const size = 9;
+        context.beginPath();
+        context.moveTo(end.x, end.y);
+        context.lineTo(end.x - Math.cos(angle - Math.PI / 6) * size, end.y - Math.sin(angle - Math.PI / 6) * size);
+        context.moveTo(end.x, end.y);
+        context.lineTo(end.x - Math.cos(angle + Math.PI / 6) * size, end.y - Math.sin(angle + Math.PI / 6) * size);
+        context.stroke();
+      }
+
+      function htmlReportPrismFaces(scene) {
+        const length = scene.dimensions.length;
+        const front = scene.crossSection.map(([y, z]) => ({ x: 0, y, z }));
+        const back = scene.crossSection.map(([y, z]) => ({ x: length, y, z }));
+        const faces = [[...front].reverse(), back];
+        scene.crossSection.forEach((_, index) => {
+          const next = (index + 1) % scene.crossSection.length;
+          faces.push([front[index], front[next], back[next], back[index]]);
+        });
+        return faces;
+      }
+
+      function htmlReportBoxFaces(placement, state) {
+        const v = htmlReportBoxVertices(placement);
+        const color = htmlReportColorForId(placement.box_id);
+        const selected = placement.instance_id === state.selectedInstanceId;
+        const hovered = placement.instance_id === state.hoveredInstanceId;
+        return [
+          htmlReportFace([v.a, v.b, v.c, v.d], color, selected, hovered, placement.instance_id, 0.52),
+          htmlReportFace([v.e, v.f, v.g, v.h], color, selected, hovered, placement.instance_id, 0.96),
+          htmlReportFace([v.a, v.b, v.f, v.e], color, selected, hovered, placement.instance_id, 0.78),
+          htmlReportFace([v.b, v.c, v.g, v.f], color, selected, hovered, placement.instance_id, 0.7),
+          htmlReportFace([v.c, v.d, v.h, v.g], color, selected, hovered, placement.instance_id, 0.62),
+          htmlReportFace([v.d, v.a, v.e, v.h], color, selected, hovered, placement.instance_id, 0.74),
+        ];
+      }
+
+      function htmlReportFace(points, color, selected, hovered, instanceId, alpha) {
+        return { points, instanceId, ...htmlReportBoxFaceStyle(color, selected, hovered, alpha) };
+      }
+
+      function htmlReportBoxFaceStyle(color, selected, hovered, alpha) {
+        if (selected) {
+          const selectedColor = htmlReportLightenColor(color, 0.1);
+          return {
+            fill: htmlReportRgbaColor(selectedColor, 0.98),
+            stroke: "#fef08a",
+            lineWidth: 3.4,
+            shadow: "rgba(254, 240, 138, 0.55)",
+          };
+        }
+        if (hovered) {
+          const hoveredColor = htmlReportLightenColor(color, 0.16);
+          return {
+            fill: htmlReportRgbaColor(hoveredColor, 0.92),
+            stroke: htmlReportRgbaColor(htmlReportLightenColor(color, 0.62), 1),
+            lineWidth: 2.4,
+            shadow: "rgba(226, 232, 240, 0.35)",
+          };
+        }
+        return {
+          fill: htmlReportRgbaColor(color, alpha),
+          stroke: htmlReportRgbaColor(htmlReportLightenColor(color, 0.38), 0.98),
+          lineWidth: 1.45,
+          shadow: "",
+        };
+      }
+
+      function htmlReportBoxVertices(placement) {
+        const x = placement.x;
+        const y = placement.y;
+        const z = placement.z;
+        const length = placement.length;
+        const width = placement.width;
+        const height = placement.height;
+        return {
+          a: { x, y, z },
+          b: { x: x + length, y, z },
+          c: { x: x + length, y: y + width, z },
+          d: { x, y: y + width, z },
+          e: { x, y, z: z + height },
+          f: { x: x + length, y, z: z + height },
+          g: { x: x + length, y: y + width, z: z + height },
+          h: { x, y: y + width, z: z + height },
+        };
+      }
+
+      function drawHtmlReportFaces(context, faces, projector, hitRegions = null) {
+        const projectedFaces = faces.map((item) => {
+          const projected = item.points.map(projector);
+          return {
+            ...item,
+            projected,
+            depth: projected.reduce((total, point) => total + point.depth, 0) / projected.length,
+          };
+        });
+        projectedFaces.sort((first, second) => first.depth - second.depth);
+        context.save();
+        projectedFaces.forEach((item) => {
+          context.beginPath();
+          item.projected.forEach((point, index) => {
+            if (index === 0) {
+              context.moveTo(point.x, point.y);
+            } else {
+              context.lineTo(point.x, point.y);
+            }
+          });
+          context.closePath();
+          context.fillStyle = item.fill;
+          context.strokeStyle = item.stroke;
+          context.lineWidth = item.lineWidth ?? 1;
+          context.shadowColor = item.shadow || "transparent";
+          context.shadowBlur = item.shadow ? 12 : 0;
+          context.fill();
+          context.stroke();
+          if (hitRegions && item.instanceId) {
+            hitRegions.push({ instanceId: item.instanceId, polygon: item.projected, depth: item.depth });
+          }
+        });
+        context.restore();
+      }
+
+      function drawHtmlReportPolyline(context, points) {
+        context.beginPath();
+        points.forEach((point, index) => {
+          if (index === 0) {
+            context.moveTo(point.x, point.y);
+          } else {
+            context.lineTo(point.x, point.y);
+          }
+        });
+        context.stroke();
+      }
+
+      function drawHtmlReportWorldPolyline(context, points, projector) {
+        drawHtmlReportPolyline(context, points.map(projector));
+      }
+
+      function drawHtmlReportBoxWireframes(context, placements, projector, state) {
+        const mutedStroke = placements.length > 220 ? "rgba(15, 23, 42, 0.46)" : "rgba(15, 23, 42, 0.72)";
+        context.save();
+        context.lineJoin = "round";
+        context.lineCap = "round";
+        placements.forEach((placement) => {
+          const highlighted = placement.instance_id === state.selectedInstanceId || placement.instance_id === state.hoveredInstanceId;
+          context.strokeStyle = highlighted ? "rgba(255, 255, 255, 0.88)" : mutedStroke;
+          context.lineWidth = highlighted ? 2.2 : 0.75;
+          htmlReportBoxEdges(htmlReportBoxVertices(placement)).forEach(([start, end]) => drawHtmlReportWorldPolyline(context, [start, end], projector));
+        });
+        context.restore();
+      }
+
+      function htmlReportBoxEdges(vertices) {
+        return [
+          [vertices.a, vertices.b],
+          [vertices.b, vertices.c],
+          [vertices.c, vertices.d],
+          [vertices.d, vertices.a],
+          [vertices.e, vertices.f],
+          [vertices.f, vertices.g],
+          [vertices.g, vertices.h],
+          [vertices.h, vertices.e],
+          [vertices.a, vertices.e],
+          [vertices.b, vertices.f],
+          [vertices.c, vertices.g],
+          [vertices.d, vertices.h],
+        ];
+      }
+
+      function drawHtmlReportBackgroundText(context, width, height) {
+        context.save();
+        context.fillStyle = "rgba(2, 6, 23, 0.72)";
+        context.fillRect(14, height - 39, 268, 26);
+        context.strokeStyle = "rgba(125, 211, 252, 0.22)";
+        context.strokeRect(14, height - 39, 268, 26);
+        context.fillStyle = "rgba(226, 232, 240, 0.88)";
+        context.font = "13px system-ui, sans-serif";
+        context.fillText("x = 长度方向，y = 截面宽度，z = 高度", 18, height - 20);
+        context.restore();
+      }
+
+      function drawHtmlReportTopProjection(canvas, state) {
+        const { context, width, height } = setupHtmlReportCanvas(canvas);
+        const scene = state.scene;
+        state.topHitRegions = [];
+        context.clearRect(0, 0, width, height);
+        const mapper = htmlReportPlaneMapper(width, height, scene.dimensions.length, scene.dimensions.maxY);
+        drawHtmlReportProjectionFrame(context, width, height, "x 长度", "y 宽度");
+        drawHtmlReportProjectionUldRect(context, mapper, scene.dimensions.length, scene.dimensions.maxY);
+        scene.placements.forEach((placement) => {
+          const color = htmlReportColorForId(placement.box_id);
+          const rect = mapper.rectToScreen(placement.x, placement.y, placement.length, placement.width);
+          const selected = placement.instance_id === state.selectedInstanceId;
+          const hovered = placement.instance_id === state.hoveredInstanceId;
+          const strokeColor = htmlReportLightenColor(color, selected ? 0.58 : hovered ? 0.5 : 0.34);
+          context.save();
+          context.fillStyle = htmlReportRgbaColor(color, selected ? 0.84 : hovered ? 0.74 : 0.56);
+          context.strokeStyle = selected ? "#fef08a" : htmlReportRgbaColor(strokeColor, 0.96);
+          context.lineWidth = selected ? 3 : hovered ? 2.2 : 1.2;
+          context.fillRect(rect.x, rect.y, rect.width, rect.height);
+          context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+          if (selected) {
+            drawHtmlReportTopProjectionLabel(context, rect, placement.instance_id, selected);
+          }
+          context.restore();
+          state.topHitRegions.push({ instanceId: placement.instance_id, rect });
+        });
+      }
+
+      function drawHtmlReportTopProjectionLabel(context, rect, label, selected) {
+        if (rect.width < 18 || rect.height < 14) {
+          return;
+        }
+        const fontSize = Math.max(10, Math.min(12, Math.floor(rect.height * 0.38)));
+        const textX = rect.x + 5;
+        const textY = rect.y + Math.min(rect.height - 4, fontSize + 5);
+        context.save();
+        context.beginPath();
+        context.rect(rect.x + 1, rect.y + 1, Math.max(0, rect.width - 2), Math.max(0, rect.height - 2));
+        context.clip();
+        context.font = "700 " + fontSize + "px system-ui, sans-serif";
+        context.lineWidth = 3;
+        context.strokeStyle = "rgba(2, 6, 23, 0.78)";
+        context.fillStyle = selected ? "#fef08a" : "#f8fafc";
+        context.strokeText(label, textX, textY, Math.max(10, rect.width - 10));
+        context.fillText(label, textX, textY, Math.max(10, rect.width - 10));
+        context.restore();
+      }
+
+      function htmlReportPlaneMapper(width, height, worldWidth, worldHeight) {
+        const padding = 34;
+        const usableWidth = Math.max(1, width - padding * 2);
+        const usableHeight = Math.max(1, height - padding * 2);
+        const scale = Math.min(usableWidth / Math.max(worldWidth, 1), usableHeight / Math.max(worldHeight, 1));
+        const offsetX = (width - worldWidth * scale) / 2;
+        const offsetY = (height - worldHeight * scale) / 2;
+        return {
+          toScreen(horizontal, vertical) {
+            return { x: offsetX + horizontal * scale, y: height - offsetY - vertical * scale };
+          },
+          rectToScreen(horizontal, vertical, rectWidth, rectHeight) {
+            const start = this.toScreen(horizontal, vertical + rectHeight);
+            return { x: start.x, y: start.y, width: rectWidth * scale, height: rectHeight * scale };
+          },
+        };
+      }
+
+      function drawHtmlReportProjectionFrame(context, width, height, horizontalLabel, verticalLabel) {
+        context.save();
+        context.fillStyle = "rgba(226, 232, 240, 0.76)";
+        context.font = "12px system-ui, sans-serif";
+        context.fillText(horizontalLabel, width - 80, height - 12);
+        context.fillText(verticalLabel, 12, 18);
+        context.restore();
+      }
+
+      function drawHtmlReportProjectionUldRect(context, mapper, width, height) {
+        const rect = mapper.rectToScreen(0, 0, width, height);
+        context.save();
+        context.strokeStyle = "rgba(186, 230, 253, 0.75)";
+        context.lineWidth = 1.6;
+        context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+        context.restore();
+      }
+
+      function updateHtmlReportSceneHover(state, event) {
+        const match = htmlReportSceneMatchAtPoint(state, event);
+        const nextInstanceId = match?.instanceId ?? null;
+        if (!nextInstanceId) {
+          clearHtmlReportSceneHover(state);
+          return;
+        }
+        if (state.hoveredInstanceId !== nextInstanceId) {
+          state.hoveredInstanceId = nextInstanceId;
+          redrawHtmlReportSceneState(state);
+        }
+        renderHtmlReportSceneTooltip(state, event, htmlReportPlacementByInstanceId(state, nextInstanceId));
+      }
+
+      function clearHtmlReportSceneHover(state) {
+        if (state.hoveredInstanceId) {
+          state.hoveredInstanceId = null;
+          redrawHtmlReportSceneState(state);
+        }
+        hideHtmlReportSceneTooltip(state);
+      }
+
+      function selectHtmlReportScenePlacement(state, event) {
+        const match = htmlReportSceneMatchAtPoint(state, event);
+        if (!match) {
+          return;
+        }
+        state.selectedInstanceId = match.instanceId;
+        redrawHtmlReportSceneState(state);
+      }
+
+      function selectHtmlReportTopPlacement(state, event) {
+        const point = htmlReportCanvasPoint(event, event.currentTarget);
+        const match = [...state.topHitRegions].reverse().find((region) => htmlReportPointInRect(point, region.rect));
+        if (!match) {
+          return;
+        }
+        state.selectedInstanceId = match.instanceId;
+        redrawHtmlReportSceneState(state);
+      }
+
+      function htmlReportSceneMatchAtPoint(state, event) {
+        const point = htmlReportCanvasPoint(event, state.sceneCanvas);
+        return [...state.hitRegions]
+          .sort((first, second) => second.depth - first.depth)
+          .find((region) => htmlReportPointInPolygon(point, region.polygon));
+      }
+
+      function renderHtmlReportSceneTooltip(state, event, placement) {
+        if (!state.tooltip || !placement) {
+          hideHtmlReportSceneTooltip(state);
+          return;
+        }
+        state.tooltip.innerHTML =
+          "<strong>" + htmlReportEscape(placement.instance_id) + "</strong>" +
+          "<div>类型：" + htmlReportEscape(placement.box_id) + "</div>" +
+          "<div>尺寸：" + htmlReportFormatNumber(placement.length) + " × " + htmlReportFormatNumber(placement.width) + " × " + htmlReportFormatNumber(placement.height) + "</div>" +
+          "<div>坐标：x " + htmlReportFormatNumber(placement.x) + "，y " + htmlReportFormatNumber(placement.y) + "，z " + htmlReportFormatNumber(placement.z) + "</div>";
+        state.tooltip.classList.add("visible");
+        const stageRect = state.tooltip.parentElement.getBoundingClientRect();
+        const tooltipRect = state.tooltip.getBoundingClientRect();
+        const maxLeft = Math.max(8, stageRect.width - tooltipRect.width - 8);
+        const maxTop = Math.max(8, stageRect.height - tooltipRect.height - 8);
+        const left = htmlReportClamp(event.clientX - stageRect.left + 14, 8, maxLeft);
+        const top = htmlReportClamp(event.clientY - stageRect.top + 14, 8, maxTop);
+        state.tooltip.style.left = left + "px";
+        state.tooltip.style.top = top + "px";
+      }
+
+      function hideHtmlReportSceneTooltip(state) {
+        state.tooltip?.classList.remove("visible");
+      }
+
+      function renderHtmlReportSceneSelection(state) {
+        if (!state.selection) {
+          return;
+        }
+        const placement = htmlReportPlacementByInstanceId(state, state.selectedInstanceId);
+        if (!placement) {
+          state.selection.classList.add("muted");
+          state.selection.textContent = "点击 3D 视图中的箱子查看位置范围。";
+          return;
+        }
+        state.selection.classList.remove("muted");
+        state.selection.innerHTML =
+          "<strong>" + htmlReportEscape(placement.instance_id) + "</strong>" +
+          "<div>类型：<code>" + htmlReportEscape(placement.box_id) + "</code></div>" +
+          "<div>x：<code>" + htmlReportFormatNumber(placement.x) + " ~ " + htmlReportFormatNumber(placement.x + placement.length) + "</code></div>" +
+          "<div>y：<code>" + htmlReportFormatNumber(placement.y) + " ~ " + htmlReportFormatNumber(placement.y + placement.width) + "</code></div>" +
+          "<div>z：<code>" + htmlReportFormatNumber(placement.z) + " ~ " + htmlReportFormatNumber(placement.z + placement.height) + "</code></div>" +
+          "<div>尺寸：<code>" + htmlReportFormatNumber(placement.length) + " × " + htmlReportFormatNumber(placement.width) + " × " + htmlReportFormatNumber(placement.height) + "</code></div>";
+      }
+
+      function htmlReportPlacementByInstanceId(state, instanceId) {
+        return state.scene.placements.find((placement) => placement.instance_id === instanceId) ?? null;
+      }
+
+      function htmlReportCanvasPoint(event, canvas) {
+        const rect = canvas.getBoundingClientRect();
+        return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      }
+
+      function htmlReportPointInRect(point, rect) {
+        return point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
+      }
+
+      function htmlReportPointInPolygon(point, polygon) {
+        let inside = false;
+        for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
+          const currentPoint = polygon[index];
+          const previousPoint = polygon[previous];
+          const crosses = currentPoint.y > point.y !== previousPoint.y > point.y;
+          if (crosses) {
+            const intersectionX = ((previousPoint.x - currentPoint.x) * (point.y - currentPoint.y)) / (previousPoint.y - currentPoint.y) + currentPoint.x;
+            if (point.x < intersectionX) {
+              inside = !inside;
+            }
+          }
+        }
+        return inside;
+      }
+
+      function htmlReportClamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function htmlReportEscape(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function htmlReportFormatNumber(value) {
+        return Number(value).toFixed(2).replace(/\\.00$/, "").replace(/(\\.\\d*[1-9])0$/, "$1");
+      }
+
+      function htmlReportColorForId(id) {
+        const palette = [
+          { r: 14, g: 165, b: 233 }, { r: 245, g: 158, b: 11 }, { r: 168, g: 85, b: 247 },
+          { r: 16, g: 185, b: 129 }, { r: 244, g: 63, b: 94 }, { r: 99, g: 102, b: 241 },
+          { r: 20, g: 184, b: 166 }, { r: 249, g: 115, b: 22 }, { r: 217, g: 70, b: 239 },
+          { r: 132, g: 204, b: 22 }, { r: 236, g: 72, b: 153 }, { r: 59, g: 130, b: 246 },
+        ];
+        let hash = 0;
+        for (const char of String(id)) {
+          hash = (hash * 31 + char.charCodeAt(0)) % 9973;
+        }
+        return palette[hash % palette.length];
+      }
+
+      function htmlReportLightenColor(color, ratio) {
+        return {
+          r: Math.round(color.r + (255 - color.r) * ratio),
+          g: Math.round(color.g + (255 - color.g) * ratio),
+          b: Math.round(color.b + (255 - color.b) * ratio),
+        };
+      }
+
+      function htmlReportRgbaColor(color, alpha) {
+        return "rgba(" + color.r + ", " + color.g + ", " + color.b + ", " + alpha + ")";
+      }
+    })();
+  `;
+}
+
+function htmlReportStyles() {
+  return `
+    :root { color-scheme: light; font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; color: #0f172a; background: #f8fafc; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f8fafc; }
+    .report { max-width: 1280px; margin: 0 auto; padding: 28px; display: grid; gap: 18px; }
+    .report-header, .sheet-page, .metric, .uld-section { background: #fff; border: 1px solid #dbe4ee; border-radius: 8px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06); }
+    .report-header { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; padding: 22px 24px; }
+    .kicker, .meta, .muted { color: #64748b; }
+    .kicker { margin: 0 0 6px; font-size: 12px; font-weight: 800; text-transform: uppercase; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: 30px; }
+    h2 { font-size: 20px; }
+    h3 { font-size: 15px; }
+    .status { padding: 8px 12px; border-radius: 6px; font-weight: 700; }
+    .status.passed { color: #047857; background: #d1fae5; }
+    .status.failed { color: #be123c; background: #ffe4e6; }
+    .sheet-tabs { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border: 1px solid #dbe4ee; border-radius: 8px; background: rgba(248, 250, 252, 0.94); backdrop-filter: blur(10px); }
+    .sheet-tab { min-height: 34px; padding: 0 12px; border: 1px solid #cbd5e1; border-radius: 6px; color: #334155; background: #fff; font-weight: 700; cursor: pointer; }
+    .sheet-tab.active { color: #075985; border-color: #38bdf8; background: #e0f2fe; }
+    .sheet-pages { display: grid; gap: 18px; }
+    .sheet-page { display: none; padding: 20px; gap: 14px; }
+    .sheet-page.active { display: grid; }
+    .visualization-toolbar { display: flex; justify-content: flex-end; }
+    .visualization-toolbar label { display: flex; align-items: center; gap: 8px; color: #475569; font-size: 13px; font-weight: 700; }
+    .visualization-toolbar select { min-height: 34px; padding: 0 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #0f172a; }
+    .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .metric { padding: 16px; display: grid; gap: 8px; }
+    .metric span { color: #64748b; font-size: 13px; }
+    .metric strong { font-size: 24px; }
+    .uld-section { padding: 16px; display: grid; gap: 14px; }
+    .section-title { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
+    .section-meta { display: flex; flex-wrap: wrap; gap: 8px; color: #475569; font-size: 13px; }
+    .section-meta span, .chip { border: 1px solid #dbe4ee; border-radius: 6px; padding: 6px 8px; background: #f8fafc; }
+    .chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
+    .top-views-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
+    .scene-row { display: grid; }
+    .view-card { border: 1px solid #dbe4ee; border-radius: 8px; padding: 12px; background: #f8fafc; }
+    .top-views-grid .view-card { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    .view-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 30px; margin-bottom: 8px; }
+    .view-card-heading h3 { margin: 0; }
+    .scene-view-controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 10px; }
+    .scene-view-controls button { min-height: 34px; padding: 0 12px; border: 1px solid #cbd5e1; border-radius: 6px; color: #334155; background: #fff; font-weight: 700; cursor: pointer; transition: color 160ms ease, border-color 160ms ease, background 160ms ease; }
+    .scene-view-controls button:hover, .scene-view-controls button:focus-visible { color: #075985; border-color: #38bdf8; background: #e0f2fe; outline: none; }
+    .report-scene-stage { position: relative; overflow: hidden; border-radius: 8px; }
+    .scene-canvas, .projection-canvas { width: 100%; display: block; border-radius: 8px; background: linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px), radial-gradient(circle at center, rgba(14, 165, 233, 0.13), transparent 32rem), #06101e; background-size: 32px 32px, 32px 32px, auto, auto; }
+    .projection-canvas { aspect-ratio: 17 / 8; min-height: 230px; cursor: crosshair; }
+    .scene-canvas { aspect-ratio: 16 / 9; min-height: 420px; cursor: grab; touch-action: none; box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.62); }
+    .scene-canvas:active { cursor: grabbing; }
+    .scene-tooltip { position: absolute; z-index: 4; display: none; max-width: min(280px, calc(100% - 24px)); padding: 10px 12px; border: 1px solid rgba(226, 232, 240, 0.28); border-radius: 8px; color: #e2e8f0; background: rgba(15, 23, 42, 0.92); box-shadow: 0 18px 44px rgba(0, 0, 0, 0.35); pointer-events: none; line-height: 1.55; font-size: 12.5px; }
+    .scene-tooltip.visible { display: block; }
+    .scene-tooltip strong { display: block; margin-bottom: 4px; color: #fef08a; }
+    .scene-selection { margin-top: 10px; padding: 10px 12px; border: 1px solid #dbe4ee; border-radius: 8px; background: #fff; font-size: 13px; line-height: 1.55; }
+    .scene-selection strong { color: #0f172a; }
+    svg { width: 100%; height: auto; display: block; }
+    .svg-bg { fill: #07111f; }
+    .grid-line { stroke: rgba(148, 163, 184, 0.18); stroke-width: 1; }
+    .uld-frame { fill: rgba(56, 189, 248, 0.08); stroke: rgba(186, 230, 253, 0.9); stroke-width: 2; }
+    .box-rect { stroke-width: 1.4; }
+    .box-label { fill: #fff7ed; font-size: 12px; font-weight: 700; }
+    .position-map-label-toggle { min-height: 30px; padding: 0 10px; border: 1px solid #cbd5e1; border-radius: 6px; color: #334155; background: #fff; font-size: 12px; font-weight: 800; cursor: pointer; transition: color 160ms ease, border-color 160ms ease, background 160ms ease; }
+    .position-map-label-toggle:hover, .position-map-label-toggle:focus-visible { color: #075985; border-color: #38bdf8; background: #e0f2fe; outline: none; }
+    .position-map-svg-wrap { width: 100%; overflow: hidden; min-height: 0; }
+    .position-map-svg { width: 100%; min-width: 0; aspect-ratio: 17 / 8; background: #07111f; border-radius: 8px; }
+    .position-map-svg.position-map-label-hidden .position-pile-label-layer { display: none; }
+    .position-pile { cursor: pointer; outline: none; }
+    .position-pile-rect { stroke-width: 1.6; transition: stroke 160ms ease, stroke-width 160ms ease, filter 160ms ease; }
+    .position-pile:hover .position-pile-rect, .position-pile:focus-visible .position-pile-rect { stroke: #fef08a; stroke-width: 2.8; }
+    .position-pile.selected .position-pile-rect { stroke: #facc15; stroke-width: 4; filter: drop-shadow(0 0 9px rgba(250, 204, 21, 0.7)); }
+    .position-pile-label-item { pointer-events: none; }
+    .position-pile-label-bg { fill: rgba(2, 6, 23, 0.64); stroke: rgba(255, 255, 255, 0.14); stroke-width: 1; }
+    .position-pile-label-item.selected .position-pile-label-bg { fill: rgba(2, 6, 23, 0.88); stroke: rgba(250, 204, 21, 0.86); stroke-width: 1.8; }
+    .position-pile-label-item.selected .position-pile-label { fill: #fef08a; }
+    .position-pile-label { fill: #ffffff; stroke: rgba(2, 6, 23, 0.88); stroke-width: 3px; paint-order: stroke; font-size: 12px; font-weight: 900; pointer-events: none; }
+    .axis-label { fill: #cbd5e1; font-size: 12px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border: 1px solid #dbe4ee; padding: 8px 10px; text-align: left; vertical-align: top; }
+    th { background: #e2e8f0; font-weight: 800; }
+    .position-map th, .position-map td { min-width: 96px; height: 48px; font-weight: 700; }
+    [hidden] { display: none !important; }
+    @media print { body { background: #fff; } .report { max-width: none; padding: 0; } .sheet-tabs { display: none; } .sheet-page { display: grid !important; break-before: page; box-shadow: none; } .sheet-page:first-of-type { break-before: auto; } .metric, .report-header, .uld-section { box-shadow: none; break-inside: avoid; } }
+    @media (max-width: 900px) { .summary-grid, .top-views-grid { grid-template-columns: 1fr; } .report-header, .section-title { display: grid; } .scene-canvas { min-height: 300px; } }
+  `;
 }
 
 function buildWorkbookSheets(result, input = null) {
@@ -1139,6 +2653,18 @@ function normalizeExcelCell(value) {
 
 function downloadExcelWorkbook(content, fileName) {
   const blob = new Blob([content], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function downloadHtmlReport(content, fileName) {
+  const blob = new Blob([content], { type: "text/html;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
