@@ -81,6 +81,7 @@ const SCENE_SAFE_PADDING = 72;
 const BOX_ANIMATION_INTERVAL_MS = 320;
 const MAX_HISTORY_RECORDS = 10;
 const HISTORY_STORAGE_KEY = "uld-packing-history";
+const THEME_STORAGE_KEY = "uld-packing-theme";
 const BULK_BOX_EXAMPLE = "140*105*94*20\n40.5*40.5*14*1";
 const BOX_COLOR_PALETTE = [
   { r: 14, g: 165, b: 233 },
@@ -164,6 +165,7 @@ document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
   cacheElements();
+  initializeTheme();
   bindEvents();
   state.historyRecords = await loadPersistedHistoryRecords();
   renderHistoryRecords();
@@ -182,6 +184,7 @@ function cacheElements() {
   elements.bulkBoxInput = document.getElementById("bulkBoxInput");
   elements.importBoxesButton = document.getElementById("importBoxesButton");
   elements.searchModeSelect = document.getElementById("searchModeSelect");
+  elements.themeToggleButton = document.getElementById("themeToggleButton");
   elements.calculateButton = document.getElementById("calculateButton");
   elements.loadSampleButton = document.getElementById("loadSampleButton");
   elements.resetViewButton = document.getElementById("resetViewButton");
@@ -228,6 +231,7 @@ function bindEvents() {
     elements.exportHtmlButton.addEventListener("click", exportHtmlReport);
   }
   elements.calculateButton.addEventListener("click", () => calculatePacking());
+  elements.themeToggleButton.addEventListener("click", toggleTheme);
   elements.containerSelector.addEventListener("change", () => selectContainer(elements.containerSelector.value));
   elements.loadSampleButton.addEventListener("click", async () => {
     await loadSample();
@@ -268,6 +272,49 @@ function bindEvents() {
   elements.topViewCanvas.addEventListener("click", (event) => focusProjectionCameraView(event, "top"));
   elements.sideViewCanvas.addEventListener("click", (event) => focusProjectionCameraView(event, "side"));
   elements.sectionViewCanvas.addEventListener("click", (event) => focusProjectionCameraView(event, "section"));
+}
+
+function initializeTheme() {
+  updateThemeToggle();
+}
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+function toggleTheme() {
+  const nextTheme = currentTheme() === "dark" ? "light" : "dark";
+  applyTheme(nextTheme);
+}
+
+function applyTheme(theme) {
+  if (theme === "dark") {
+    document.documentElement.dataset.theme = "dark";
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, "dark");
+    } catch {
+      // Theme still changes for the current session when storage is unavailable.
+    }
+  } else {
+    delete document.documentElement.dataset.theme;
+    try {
+      localStorage.removeItem(THEME_STORAGE_KEY);
+    } catch {
+      // Theme still changes for the current session when storage is unavailable.
+    }
+  }
+  updateThemeToggle();
+  drawAllViews();
+}
+
+function updateThemeToggle() {
+  if (!elements.themeToggleButton) {
+    return;
+  }
+  const dark = currentTheme() === "dark";
+  elements.themeToggleButton.textContent = dark ? "亮色模式" : "深色模式";
+  elements.themeToggleButton.setAttribute("aria-label", dark ? "切换亮色主题" : "切换深色主题");
+  elements.themeToggleButton.setAttribute("aria-pressed", String(dark));
 }
 
 async function loadSample() {
@@ -3527,6 +3574,10 @@ function setupCanvas(canvas) {
   return { canvas, context, rect };
 }
 
+function themeCssValue(name, fallback) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
 function createPlaneMapper(rect, worldWidth, worldHeight, horizontalAxis, verticalAxis) {
   const padding = 34;
   const usableWidth = Math.max(1, rect.width - padding * 2);
@@ -3557,7 +3608,7 @@ function createPlaneMapper(rect, worldWidth, worldHeight, horizontalAxis, vertic
 
 function drawProjectionFrame(context, rect, horizontalLabel, verticalLabel) {
   context.save();
-  context.fillStyle = "rgba(226, 232, 240, 0.76)";
+  context.fillStyle = themeCssValue("--muted-strong", "rgba(226, 232, 240, 0.76)");
   context.font = "12px system-ui, sans-serif";
   context.fillText(horizontalLabel, rect.width - 80, rect.height - 12);
   context.fillText(verticalLabel, 12, 18);
@@ -3567,7 +3618,7 @@ function drawProjectionFrame(context, rect, horizontalLabel, verticalLabel) {
 function drawProjectionUldRect(context, mapper, width, height) {
   const rect = mapper.rectToScreen(0, 0, width, height);
   context.save();
-  context.strokeStyle = "rgba(186, 230, 253, 0.75)";
+  context.strokeStyle = themeCssValue("--accent", "rgba(186, 230, 253, 0.75)");
   context.lineWidth = 1.6;
   context.strokeRect(rect.x, rect.y, rect.width, rect.height);
   context.restore();
@@ -3759,11 +3810,11 @@ function projectScenePoint(point, dimensions) {
 
 function drawBackgroundText(context, rect) {
   context.save();
-  context.fillStyle = "rgba(2, 6, 23, 0.72)";
+  context.fillStyle = themeCssValue("--axis-label-bg", "rgba(15, 23, 42, 0.72)");
   context.fillRect(14, rect.height - 39, 268, 26);
-  context.strokeStyle = "rgba(125, 211, 252, 0.22)";
+  context.strokeStyle = themeCssValue("--axis-label-border", "rgba(255, 255, 255, 0.22)");
   context.strokeRect(14, rect.height - 39, 268, 26);
-  context.fillStyle = "rgba(226, 232, 240, 0.88)";
+  context.fillStyle = themeCssValue("--muted-strong", "rgba(226, 232, 240, 0.88)");
   context.font = "13px system-ui, sans-serif";
   context.fillText("x = 长度方向，y = 截面宽度，z = 高度", 18, rect.height - 20);
   context.restore();
@@ -3902,9 +3953,9 @@ function drawAxis(context, projector, start, end, label, color) {
   context.font = "700 14px system-ui, sans-serif";
   const labelText = label;
   const labelWidth = context.measureText(labelText).width + 14;
-  context.fillStyle = "rgba(15, 23, 42, 0.72)";
+  context.fillStyle = themeCssValue("--axis-label-bg", "rgba(15, 23, 42, 0.72)");
   context.fillRect(b.x + 3, b.y - 22, labelWidth, 22);
-  context.strokeStyle = "rgba(255, 255, 255, 0.22)";
+  context.strokeStyle = themeCssValue("--axis-label-border", "rgba(255, 255, 255, 0.22)");
   context.strokeRect(b.x + 3, b.y - 22, labelWidth, 22);
   context.fillStyle = color;
   context.fillText(labelText, b.x + 10, b.y - 6);

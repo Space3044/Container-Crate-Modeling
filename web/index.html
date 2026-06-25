@@ -4,6 +4,17 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Multi ULD Profile Packing</title>
+    <script>
+      (() => {
+        try {
+          if (localStorage.getItem("uld-packing-theme") === "dark") {
+            document.documentElement.dataset.theme = "dark";
+          }
+        } catch {
+          document.documentElement.dataset.theme = "";
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="/styles.css" />
     <script src="/app.js" defer></script>
   </head>
@@ -19,6 +30,7 @@
             <option value="high_utilization">高装载率模式</option>
           </select>
         </label>
+        <button id="themeToggleButton" type="button" class="secondary-button theme-toggle-button" aria-label="切换深色主题">深色模式</button>
         <button id="loadSampleButton" type="button" class="secondary-button">载入示例</button>
         <button id="calculateButton" type="button" class="primary-button">计算装箱</button>
       </div>

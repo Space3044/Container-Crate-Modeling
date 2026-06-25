@@ -37,6 +37,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "animationResetButton",
             "animationSpeedSlider",
             "animationSpeedValue",
+            "themeToggleButton",
         ]:
             self.assertIn(f'id="{expected_id}"', html)
         self.assertNotIn("只改变截面查看，不改变装箱结果", html)
@@ -84,6 +85,18 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertNotIn("<th>类型</th>", html)
         self.assertNotIn("<th>旋转</th>", html)
         self.assertNotIn("容器", html)
+
+    def test_visualizer_page_has_light_default_theme_bootstrap_and_toggle(self):
+        html = Path("web/index.html").read_text(encoding="utf-8")
+
+        self.assertNotIn('<html lang="zh-CN" data-theme="dark">', html)
+        self.assertIn('localStorage.getItem("uld-packing-theme") === "dark"', html)
+        self.assertIn('document.documentElement.dataset.theme = "dark"', html)
+        self.assertLess(html.index("uld-packing-theme"), html.index('<link rel="stylesheet" href="/styles.css" />'))
+        self.assertIn('id="themeToggleButton"', html)
+        self.assertIn('class="secondary-button theme-toggle-button"', html)
+        self.assertIn('aria-label="切换深色主题"', html)
+        self.assertIn(">深色模式</button>", html)
 
     def test_visualizer_script_contains_projection_and_selection_behaviors(self):
         script = Path("web/app.js").read_text(encoding="utf-8")
@@ -166,6 +179,11 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "currentAnimatedInstanceId",
             "setSceneBoxFocus",
             "clearSceneBoxFocus",
+            "initializeTheme",
+            "currentTheme",
+            "toggleTheme",
+            "applyTheme",
+            "updateThemeToggle",
         ]:
             self.assertIn(f"function {expected_function}", script)
         self.assertIn("containers:", script)
@@ -240,6 +258,15 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("装箱坐标", script)
         self.assertIn("MAX_HISTORY_RECORDS = 10", script)
         self.assertIn("HISTORY_STORAGE_KEY", script)
+        self.assertIn('THEME_STORAGE_KEY = "uld-packing-theme"', script)
+        self.assertIn('elements.themeToggleButton = document.getElementById("themeToggleButton")', script)
+        self.assertIn('elements.themeToggleButton.addEventListener("click", toggleTheme)', script)
+        self.assertIn('localStorage.setItem(THEME_STORAGE_KEY, "dark")', script)
+        self.assertIn("localStorage.removeItem(THEME_STORAGE_KEY)", script)
+        self.assertIn('document.documentElement.dataset.theme = "dark"', script)
+        self.assertIn("delete document.documentElement.dataset.theme", script)
+        self.assertIn('elements.themeToggleButton.setAttribute("aria-pressed", String(dark))', script)
+        self.assertIn('drawAllViews()', script)
         self.assertIn('elements.searchModeSelect = document.getElementById("searchModeSelect")', script)
         self.assertIn("search_mode: elements.searchModeSelect.value", script)
         self.assertIn("search_mode: input.search_mode ?? \"balanced\"", script)
@@ -439,9 +466,28 @@ if (tableBody.innerHTML !== "") {
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         self.assertNotIn(".result-details {\n  display: grid;\n  gap: 14px;\n  align-content: start;\n  position: sticky", css)
         self.assertIn("pointer-events: none", css)
-        self.assertIn("border: 1px solid rgba(226, 232, 240, 0.28)", css)
-        self.assertIn("box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.68)", css)
-        self.assertIn("background: linear-gradient(160deg, #040813 0%, #071426 52%, #01040a 100%)", css)
+        self.assertIn("border: 1px solid var(--tooltip-border)", css)
+        self.assertIn("box-shadow: var(--scene-canvas-shadow)", css)
+        self.assertIn("background: var(--scene-canvas-bg)", css)
+
+    def test_visualizer_styles_define_light_tokens_and_dark_overrides(self):
+        css = Path("web/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn(":root {\n  color-scheme: light;", css)
+        self.assertIn("--bg: #f5f8fc;", css)
+        self.assertIn("--panel: rgba(255, 255, 255, 0.9);", css)
+        self.assertIn("--text: #1e293b;", css)
+        self.assertIn("--muted: #64748b;", css)
+        self.assertIn("--header-bg:", css)
+        self.assertIn("--panel-title-bg:", css)
+        self.assertIn("--scene-canvas-bg:", css)
+        self.assertIn("--tooltip-border:", css)
+        self.assertIn('html[data-theme="dark"] {\n  color-scheme: dark;', css)
+        self.assertIn("--bg: #070d1c;", css)
+        self.assertIn("--panel: rgba(15, 23, 42, 0.78);", css)
+        self.assertIn("--text: #e6edfb;", css)
+        self.assertIn("--muted: #94a3b8;", css)
+        self.assertIn(".theme-toggle-button", css)
 
     def test_visualizer_defaults_to_field_uld_rows_with_zero_quantities_and_no_sample_box(self):
         script = Path("web/app.js").read_text(encoding="utf-8")
