@@ -277,18 +277,27 @@ def _best_of_rounds(
     for variant, seed in rounds:
         rng = random.Random(seed) if seed is not None else None
         result = _pack_multi_profile_variant(problem, variant=variant, rng=rng)
-        score = _multi_result_score(result, problem.objective)
+        score = _multi_result_score(problem, result)
         if best_result is None or score > best_score:
             best_result = result
             best_score = score
     return best_result if best_result is not None else _pack_multi_profile_variant(problem, variant=0)
 
 
-def _multi_result_score(result: MultiContainerPackingResult, objective: str) -> tuple[float, ...]:
+def _multi_result_score(problem: MultiContainerPackingInput, result: MultiContainerPackingResult) -> tuple[float, ...]:
     used_container_count = sum(1 for container in result.containers if container.result.placements)
-    if objective == "maximize_count":
-        return (-result.unloaded_count, -used_container_count, result.loaded_count, result.used_volume)
-    return (-result.unloaded_count, -used_container_count, result.used_volume, result.loaded_count)
+    required_unloaded_count = _required_unloaded_count_from_result(problem, result)
+    if problem.objective == "maximize_count":
+        return (-required_unloaded_count, -result.unloaded_count, -used_container_count, result.loaded_count, result.used_volume)
+    return (-required_unloaded_count, -result.unloaded_count, -used_container_count, result.used_volume, result.loaded_count)
+
+
+def _required_unloaded_count_from_result(
+    problem: MultiContainerPackingInput,
+    result: MultiContainerPackingResult,
+) -> int:
+    required_box_ids = {box.id for box in problem.boxes if box.required_container_types}
+    return sum(item.quantity for item in result.unloaded if item.box_id in required_box_ids)
 
 
 def _pack_multi_profile_variant(
@@ -494,7 +503,10 @@ def _container_candidate_options(
     active_pool = [
         (index, container)
         for index, container in enumerate(state.containers)
-        if container.placements and _box_can_fit_container(box, container.spec) and _container_remaining_volume(container) >= box.volume
+        if container.placements
+        and _box_allowed_in_container(box, container)
+        and _box_can_fit_container(box, container.spec)
+        and _container_remaining_volume(container) >= box.volume
     ]
     active_options = _container_options_from_pool(problem, active_pool, box, instance_id, limits, rng=rng)
     if active_options:
@@ -575,7 +587,9 @@ def _candidate_container_pool(
     indexed = [
         (index, container)
         for index, container in enumerate(containers)
-        if _box_can_fit_container(box, container.spec) and _container_remaining_volume(container) >= box.volume
+        if _box_allowed_in_container(box, container)
+        and _box_can_fit_container(box, container.spec)
+        and _container_remaining_volume(container) >= box.volume
     ]
     if len(indexed) <= limits.container_candidates * 2:
         return indexed
@@ -656,25 +670,37 @@ def _box_type_score(
     box: BoxSpec,
     variant: int = 0,
 ) -> tuple[float, ...]:
-    fit_count = sum(1 for container in state.containers if _box_can_fit_container(box, container.spec))
+    required_priority = 1 if box.required_container_types else 0
+    fit_count = sum(
+        1
+        for container in state.containers
+        if _box_allowed_in_container(box, container) and _box_can_fit_container(box, container.spec)
+    )
     remaining_quantity = state.remaining_counter[box.id]
     longest_edge = max(box.length, box.width, box.height)
     if variant == 1:
-        return (-fit_count, box.volume, remaining_quantity, longest_edge)
+        return (required_priority, -fit_count, box.volume, remaining_quantity, longest_edge)
     if variant == 2:
-        return (-fit_count, longest_edge, box.volume, remaining_quantity)
+        return (required_priority, -fit_count, longest_edge, box.volume, remaining_quantity)
     if variant == 3:
-        return (-fit_count, box.volume * remaining_quantity, longest_edge, remaining_quantity)
+        return (required_priority, -fit_count, box.volume * remaining_quantity, longest_edge, remaining_quantity)
     if variant == 4:
         # 高箱优先：先让高箱占住截面全高区，矮箱整层退到斜边下的矮带
-        return (-fit_count, box.height, box.volume, remaining_quantity)
+        return (required_priority, -fit_count, box.height, box.volume, remaining_quantity)
     if problem.objective == "maximize_count":
-        return (-fit_count, remaining_quantity, box.volume, longest_edge)
-    return (-fit_count, box.volume, remaining_quantity, longest_edge)
+        return (required_priority, -fit_count, remaining_quantity, box.volume, longest_edge)
+    return (required_priority, -fit_count, box.volume, remaining_quantity, longest_edge)
 
 
 def _box_can_fit_any_container(box: BoxSpec, containers: list[ContainerState]) -> bool:
-    return any(_box_can_fit_container(box, container.spec) for container in containers)
+    return any(
+        _box_allowed_in_container(box, container) and _box_can_fit_container(box, container.spec)
+        for container in containers
+    )
+
+
+def _box_allowed_in_container(box: BoxSpec, container: ContainerState) -> bool:
+    return not box.required_container_types or container.spec.id in box.required_container_types
 
 
 def _box_can_fit_container(box: BoxSpec, container: ContainerSpec) -> bool:
@@ -913,6 +939,7 @@ def _column_branch_in_container(
         candidate
         for candidate in problem.boxes
         if state.remaining_counter[candidate.id] > 0 and _footprint_key(candidate) == _footprint_key(box)
+        and _box_allowed_in_container(candidate, container_state)
     ]
     if not family:
         return []
@@ -929,6 +956,8 @@ def _column_branch_in_container(
             if with_toppers:
                 for candidate in problem.boxes:
                     if state.remaining_counter[candidate.id] <= 0 or _footprint_key(candidate) == _footprint_key(box):
+                        continue
+                    if not _box_allowed_in_container(candidate, container_state):
                         continue
                     orientation = _topper_orientation(candidate, seed_length, seed_width, min_ratio)
                     if orientation is not None:
@@ -1192,6 +1221,8 @@ def _rescue_unloaded_boxes(
             continue
         box = box_by_id[box_id]
         for container_index, container in enumerate(current_state.containers):
+            if not _box_allowed_in_container(box, container):
+                continue
             if not _box_can_fit_container(box, container.spec):
                 continue
             candidate = _rescue_box_into_container(problem, current_state, container_index, box, box_by_id, limits)
@@ -1272,6 +1303,8 @@ def _seed_box_in_container(
     limits: SearchLimits,
 ) -> GlobalPackingState | None:
     container_state = state.containers[container_index]
+    if not _box_allowed_in_container(box, container_state):
+        return None
     profile_input = _profile_input_for_container(problem, container_state)
     quantity = state.remaining_counter[box.id]
     instance_id = f"{box.id}-{box.quantity - quantity + 1:03d}"
@@ -1544,6 +1577,8 @@ def _best_refill_option(
     for container_index, container_state in enumerate(state.containers):
         if not container_state.placements:
             continue
+        if not _box_allowed_in_container(box, container_state):
+            continue
         if not _box_can_fit_container(box, container_state.spec) or _container_remaining_volume(container_state) < box.volume:
             continue
         profile_input = _profile_input_for_container(problem, container_state)
@@ -1617,16 +1652,40 @@ def _select_global_beam_states(
     )[:beam_width]
 
 
-def _global_state_score(problem: MultiContainerPackingInput, state: GlobalPackingState) -> tuple[float, int, float, int, float, float]:
+def _global_state_score(problem: MultiContainerPackingInput, state: GlobalPackingState) -> tuple[float, ...]:
     used_volume = sum(placement.volume for container in state.containers for placement in container.placements)
     loaded_count = sum(len(container.placements) for container in state.containers)
     unloaded_count = sum(quantity for quantity in state.remaining_counter.values() if quantity > 0)
+    required_unloaded_count = _required_unloaded_count_from_state(problem, state)
     compactness = sum(_container_bounding_volume(container) for container in state.containers)
     used_container_count = _used_container_count(state.containers)
     active_container_utilization = _active_container_utilization(state.containers)
     if problem.objective == "maximize_count":
-        return (-unloaded_count, -used_container_count, loaded_count, used_volume, active_container_utilization, -compactness)
-    return (-unloaded_count, -used_container_count, used_volume, loaded_count, active_container_utilization, -compactness)
+        return (
+            -required_unloaded_count,
+            -unloaded_count,
+            -used_container_count,
+            loaded_count,
+            used_volume,
+            active_container_utilization,
+            -compactness,
+        )
+    return (
+        -required_unloaded_count,
+        -unloaded_count,
+        -used_container_count,
+        used_volume,
+        loaded_count,
+        active_container_utilization,
+        -compactness,
+    )
+
+
+def _required_unloaded_count_from_state(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+) -> int:
+    return sum(state.remaining_counter[box.id] for box in problem.boxes if box.required_container_types)
 
 
 def _global_state_signature(state: GlobalPackingState) -> tuple[object, ...]:
@@ -1692,6 +1751,7 @@ def _multi_result_from_global_state(
         for container in container_results
         for error in container.result.validation_errors
     ]
+    validation_errors.extend(_required_container_validation_errors(problem, state))
     used_volume = sum(container.result.used_volume for container in container_results)
     container_volume = sum(container.result.uld_volume for container in container_results)
     return MultiContainerPackingResult(
@@ -1706,6 +1766,22 @@ def _multi_result_from_global_state(
         validation_passed=not validation_errors,
         validation_errors=validation_errors,
     )
+
+
+def _required_container_validation_errors(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+) -> list[str]:
+    box_by_id = {box.id: box for box in problem.boxes}
+    errors: list[str] = []
+    for container in state.containers:
+        for placement in container.placements:
+            required_container_types = box_by_id[placement.box_id].required_container_types
+            if required_container_types and container.spec.id not in required_container_types:
+                errors.append(
+                    f"{placement.instance_id} must be placed in one of container types {list(required_container_types)}"
+                )
+    return errors
 
 
 def _profile_input_for_container(problem: MultiContainerPackingInput, container_state: ContainerState) -> ProfilePackingInput:

@@ -62,6 +62,17 @@ high_utilization：0.7
 
 只有顶面高度恰好等于当前箱子底面 z 的箱子才算支撑，接触判定容差 1e-9。不同高度、未接触箱底的箱子不计入支撑面积。
 
+### 5. 人工指定 ULD
+
+多 ULD 输入中，箱型可以通过 `required_container_types` 指定允许进入的 ULD 类型。
+
+```text
+required_container_types 为空或省略：该箱型可由算法自动分配
+required_container_types 非空：该箱型的所有实例只能放入列表中的 ULD 类型
+```
+
+ULD 类型即 `container.id`，例如 `Q7`、`PGA`。输入校验应拒绝不存在的 `required_container_types`。带有该字段的箱型在候选箱型排序中优先处理，避免普通箱型先占用受限 ULD 空间。
+
 ## 范围外约束
 
 以下约束明确不在当前建模范围内，算法和数据模型都不为其预留逻辑：
@@ -79,6 +90,7 @@ high_utilization：0.7
 ```text
 box.quantity ≥ 0
 container.quantity ≥ 1（默认 1）
+box.required_container_types = ["Q7"]（可选，仅多 ULD 输入生效）
 objective = maximize_volume | maximize_count
 search_mode = fast | balanced | high_utilization
 ```

@@ -409,6 +409,7 @@ function addContainerRow(container = {}) {
 function addBoxRow(box = {}) {
   const row = document.createElement("tr");
   const id = box.id ?? nextAlphabeticId("BOX", ".box-id");
+  const requiredContainerTypes = Array.isArray(box.required_container_types) ? box.required_container_types.join(", ") : "";
   row.innerHTML = `
     <td><input class="box-id" type="text" value="${escapeAttribute(id)}" aria-label="箱子 ID" /></td>
     <td><input class="box-length" type="number" min="1" step="1" value="${box.length ?? 60}" aria-label="箱子长度" /></td>
@@ -416,6 +417,7 @@ function addBoxRow(box = {}) {
     <td><input class="box-height" type="number" min="1" step="1" value="${box.height ?? 30}" aria-label="箱子高度" /></td>
     <td><input class="box-quantity" type="number" min="0" step="1" value="${box.quantity ?? 1}" aria-label="箱子数量" /></td>
     <td><input class="box-rotatable" type="checkbox" ${box.rotatable ?? true ? "checked" : ""} aria-label="允许长宽互换" /></td>
+    <td><input class="box-required-container-types" type="text" value="${escapeAttribute(requiredContainerTypes)}" placeholder="Q7" aria-label="指定 ULD 类型" /></td>
     <td><button class="icon-button" type="button" aria-label="删除箱子">×</button></td>
   `;
   row.querySelector("button").addEventListener("click", () => row.remove());
@@ -778,6 +780,13 @@ function htmlTopMapFallbackDimensions(placements) {
     length: Math.max(1, ...placements.map((placement) => Number(placement.x) + Number(placement.length))),
     maxY: Math.max(1, ...placements.map((placement) => Number(placement.y) + Number(placement.width))),
   };
+}
+
+function parseRequiredContainerTypes(rawValue) {
+  return String(rawValue)
+    .split(/[,，]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function buildHtmlTopPositionPiles(placements) {
@@ -2089,7 +2098,7 @@ function buildWorkbookSheets(result, input = null) {
     {
       name: "箱子数据",
       rows: [
-        ["箱子 ID", "长", "宽", "高", "数量", "长宽互换"],
+        ["箱子 ID", "长", "宽", "高", "数量", "长宽互换", "ULD 类型"],
         ...(exportInput.boxes ?? []).map((box) => [
           box.id ?? "",
           Number(box.length),
@@ -2097,9 +2106,10 @@ function buildWorkbookSheets(result, input = null) {
           Number(box.height),
           Number(box.quantity ?? 0),
           box.rotatable ?? true ? "是" : "否",
+          (box.required_container_types ?? []).join(", "),
         ]),
       ],
-      widths: [22, 12, 12, 12, 12, 14],
+      widths: [22, 12, 12, 12, 12, 14, 24],
     },
     {
       name: "已装箱类型",
@@ -3074,7 +3084,7 @@ function readBoxesFromForm() {
     if (!id) {
       throw new Error(`第 ${index + 1} 行箱子缺少 ID`);
     }
-    return {
+    const box = {
       id,
       length: readPositiveNumber(row.querySelector(".box-length").value, `${id} 长度`),
       width: readPositiveNumber(row.querySelector(".box-width").value, `${id} 宽度`),
@@ -3082,6 +3092,11 @@ function readBoxesFromForm() {
       quantity: readNonNegativeInteger(row.querySelector(".box-quantity").value, `${id} 数量`),
       rotatable: row.querySelector(".box-rotatable").checked,
     };
+    const requiredContainerTypes = parseRequiredContainerTypes(row.querySelector(".box-required-container-types").value);
+    if (requiredContainerTypes.length > 0) {
+      box.required_container_types = requiredContainerTypes;
+    }
+    return box;
   });
 }
 

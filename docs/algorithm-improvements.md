@@ -644,6 +644,34 @@ PGA 反例、Q5×8 等既有用例全部不回退（60 个回归测试通过）�
 73.2% 利用率，而 A 独占 ULD 的天花板是 69%，需要每个 ULD 都
 接近手算最优摆法才能全装下，是当前启发式的边界用例。
 
+## 第十六版：人工指定 ULD 类型硬约束
+
+动机：现场配载会有人为决策，部分箱型必须放入指定 ULD 类型。该要求是业务硬约束，不能被装载率评分、补空或局部重排覆盖；指定箱型应优先容纳，避免普通箱型先占用受限空间。
+
+做法：
+
+```text
+BoxSpec 增加 required_container_types
+MultiContainerPackingInput 校验指定的 ULD 类型必须存在
+全局搜索候选容器按 required_container_types 过滤
+全局搜索候选箱型排序优先处理带 required_container_types 的箱型
+补空、救援、立柱墙压顶候选和结果校验统一遵守该约束
+Web 表格增加“ULD 类型”列，逗号分隔多个类型 ID
+Excel/HTML 导出的“箱子数据”保留该输入列
+```
+
+对应测试：
+
+```text
+test_pack_multi_profile_obeys_required_container_types
+test_pack_multi_profile_prioritizes_required_container_type_boxes
+test_multi_container_input_rejects_unknown_required_container_type
+test_multi_container_input_from_dict_reads_required_container_types
+test_required_container_types_parse_comma_separated_values
+```
+
+效果：未指定的箱型保持原有自动分配；指定后的箱型只会进入允许的 ULD 类型，并在搜索中优先尝试。若指定类型不存在，输入阶段直接报错，避免把人工录入错误静默解释成空间不足。
+
 ## 当前算法总结
 
 当前完整策略可以概括为：
@@ -667,6 +695,7 @@ PGA 反例、Q5×8 等既有用例全部不回退（60 个回归测试通过）�
 + 高装载率模式下对最差 ULD 顶层做局部重排，并对最差两 ULD 联合重装
 + 高装载率模式下 multistart 多 box 排序变体取最优（含高箱优先变体）
 + 高装载率模式下放宽底面支撑率到 0.7，允许更紧密堆叠
++ 人工指定 ULD 类型硬约束：指定箱型只允许进入 required_container_types 中的 ULD 类型，并优先容纳
 ```
 
 它比初版贪心更稳定，但由于 Beam Search 只保留有限数量的状态，仍然不是数学严格最优。

@@ -203,7 +203,6 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertNotIn("容器", script)
         self.assertIn("ULD ID", script)
         self.assertIn("缺少 ID", script)
-        self.assertNotIn("ULD 类型", script)
         self.assertNotIn("缺少类型", script)
         self.assertIn("AXIS_EXTENSION_FACTOR", script)
         self.assertIn("dimensions.length * AXIS_EXTENSION_FACTOR", script)
@@ -235,6 +234,8 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn(r".split(/\r\n|\n|\r/)", script)
         self.assertIn(r"line.split(/[\s*＊×xXｘＸ✕✖⨯]+/)", script)
         self.assertIn("quantity: readNonNegativeInteger(quantity", script)
+        self.assertIn('class="box-required-container-types"', script)
+        self.assertIn("parseRequiredContainerTypes", script)
         self.assertIn("exportExcelButton.addEventListener", script)
         self.assertIn("exportHtmlButton.addEventListener", script)
         self.assertIn("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", script)
@@ -456,6 +457,8 @@ if (tableBody.innerHTML !== "") {
         self.assertIn("right: 18px", css)
         self.assertIn(".uld-panel .table-scroll,\n.boxes-panel .table-scroll {\n  overflow-x: hidden;", css)
         self.assertIn(".box-table th:nth-child(n+5),\n.box-table td:nth-child(n+5)", css)
+        self.assertIn(".box-table td:nth-child(1) { width: 18%; }", css)
+        self.assertIn(".box-table td:nth-child(7) {\n  width: 16%;", css)
         self.assertIn(".box-table td:nth-child(5) input", css)
         self.assertIn("max-width: 76px", css)
         self.assertIn(".box-table .icon-button", css)
@@ -773,7 +776,7 @@ const input = {
     },
   ],
   boxes: [
-    { id: "BOX-A", length: 60, width: 40, height: 30, quantity: 5, rotatable: false },
+    { id: "BOX-A", length: 60, width: 40, height: 30, quantity: 5, rotatable: false, required_container_types: ["Q7"] },
   ],
   objective: "maximize_volume",
   search_mode: "balanced",
@@ -822,11 +825,39 @@ if (JSON.stringify(uldRows[0]) !== JSON.stringify(["ULD ID", "长度", "数量",
 if (uldRow[0] !== "Q7" || uldRow[1] !== 306 || uldRow[2] !== 2 || uldRow[3] !== expectedCrossSection) {
   throw new Error(`unexpected ULD row: ${JSON.stringify(uldRow)}`);
 }
-if (JSON.stringify(boxRows[0]) !== JSON.stringify(["箱子 ID", "长", "宽", "高", "数量", "长宽互换"])) {
+if (JSON.stringify(boxRows[0]) !== JSON.stringify(["箱子 ID", "长", "宽", "高", "数量", "长宽互换", "ULD 类型"])) {
   throw new Error(`unexpected box header: ${JSON.stringify(boxRows[0])}`);
 }
-if (boxRow[0] !== "BOX-A" || boxRow[1] !== 60 || boxRow[2] !== 40 || boxRow[3] !== 30 || boxRow[4] !== 5 || boxRow[5] !== "否") {
+if (boxRow[0] !== "BOX-A" || boxRow[1] !== 60 || boxRow[2] !== 40 || boxRow[3] !== 30 || boxRow[4] !== 5 || boxRow[5] !== "否" || boxRow[6] !== "Q7") {
   throw new Error(`unexpected box row: ${JSON.stringify(boxRow)}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_required_container_types_parse_comma_separated_values(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+const ids = context.parseRequiredContainerTypes(" Q7, PGA ， Q5 ");
+if (JSON.stringify(ids) !== JSON.stringify(["Q7", "PGA", "Q5"])) {
+  throw new Error(`unexpected required container ids: ${JSON.stringify(ids)}`);
 }
 """
         completed = subprocess.run(

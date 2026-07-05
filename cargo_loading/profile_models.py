@@ -73,6 +73,7 @@ class BoxSpec:
     height: float
     quantity: int
     rotatable: bool = True
+    required_container_types: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         _non_empty(self.id, "box.id")
@@ -81,6 +82,12 @@ class BoxSpec:
         _positive(self.height, "box.height")
         if self.quantity < 0:
             raise PackingInputError("box.quantity must be non-negative")
+        if isinstance(self.required_container_types, str):
+            raise PackingInputError("box.required_container_types must be a list of container types")
+        required_container_types = tuple(self.required_container_types)
+        for container_type in required_container_types:
+            _non_empty(container_type, "box.required_container_types")
+        object.__setattr__(self, "required_container_types", required_container_types)
 
     @property
     def volume(self) -> float:
@@ -109,6 +116,13 @@ class MultiContainerPackingInput:
         if not self.containers:
             raise PackingInputError("containers must not be empty")
         _valid_search_mode(self.search_mode)
+        container_types = {container.id for container in self.containers}
+        for box in self.boxes:
+            for container_type in box.required_container_types:
+                if container_type not in container_types:
+                    raise PackingInputError(
+                        f"box {box.id} required_container_types contains unknown container type {container_type}"
+                    )
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 import unittest
 
-from cargo_loading.profile_models import BoxSpec, ContainerSpec, MultiContainerPackingInput
+from cargo_loading.profile_models import BoxSpec, ContainerSpec, MultiContainerPackingInput, PackingInputError
 from cargo_loading.profile_packer import (
     MAX_BATCH_PLACEMENTS,
     MAX_GLOBAL_BOX_TYPE_CANDIDATES,
@@ -23,6 +23,123 @@ from cargo_loading.profile_packer import (
 
 
 class MultiContainerPackerTests(unittest.TestCase):
+    def test_pack_multi_profile_obeys_required_container_types(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="ULD-A",
+                    length=10,
+                    cross_section=[(0, 0), (10, 0), (10, 10), (0, 10)],
+                    quantity=1,
+                ),
+                ContainerSpec(
+                    id="ULD-B",
+                    length=10,
+                    cross_section=[(0, 0), (10, 0), (10, 10), (0, 10)],
+                    quantity=1,
+                ),
+            ],
+            boxes=[
+                BoxSpec(
+                    id="VIP",
+                    length=10,
+                    width=10,
+                    height=10,
+                    quantity=1,
+                    rotatable=False,
+                    required_container_types=("ULD-B",),
+                )
+            ],
+        )
+
+        result = pack_multi_profile(problem)
+
+        self.assertEqual(result.loaded_count, 1)
+        self.assertEqual(result.unloaded_count, 0)
+        self.assertEqual(
+            {
+                container.container_id: [placement.box_id for placement in container.result.placements]
+                for container in result.containers
+            },
+            {"ULD-A-001": [], "ULD-B-001": ["VIP"]},
+        )
+        self.assertTrue(result.validation_passed)
+
+    def test_pack_multi_profile_prioritizes_required_container_type_boxes(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="TARGET",
+                    length=10,
+                    cross_section=[(0, 0), (10, 0), (10, 10), (0, 10)],
+                    quantity=1,
+                ),
+                ContainerSpec(
+                    id="SMALL",
+                    length=5,
+                    cross_section=[(0, 0), (10, 0), (10, 10), (0, 10)],
+                    quantity=1,
+                ),
+            ],
+            boxes=[
+                BoxSpec(
+                    id="FLEX",
+                    length=10,
+                    width=10,
+                    height=10,
+                    quantity=1,
+                    rotatable=False,
+                ),
+                BoxSpec(
+                    id="VIP",
+                    length=10,
+                    width=10,
+                    height=5,
+                    quantity=1,
+                    rotatable=False,
+                    required_container_types=("TARGET",),
+                ),
+            ],
+        )
+
+        result = pack_multi_profile(problem)
+
+        self.assertEqual(result.loaded_count, 1)
+        self.assertEqual([(item.box_id, item.quantity) for item in result.loaded], [("VIP", 1)])
+        self.assertEqual([(item.box_id, item.quantity) for item in result.unloaded], [("FLEX", 1)])
+        self.assertEqual(
+            {
+                container.container_id: [placement.box_id for placement in container.result.placements]
+                for container in result.containers
+            },
+            {"TARGET-001": ["VIP"], "SMALL-001": []},
+        )
+        self.assertTrue(result.validation_passed)
+
+    def test_multi_container_input_rejects_unknown_required_container_type(self):
+        with self.assertRaisesRegex(PackingInputError, "required_container_types"):
+            MultiContainerPackingInput(
+                containers=[
+                    ContainerSpec(
+                        id="ULD-A",
+                        length=10,
+                        cross_section=[(0, 0), (10, 0), (10, 10), (0, 10)],
+                        quantity=1,
+                    )
+                ],
+                boxes=[
+                    BoxSpec(
+                        id="VIP",
+                        length=10,
+                        width=10,
+                        height=10,
+                        quantity=1,
+                        rotatable=False,
+                        required_container_types=("ULD-B",),
+                    )
+                ],
+            )
+
     def test_pack_multi_profile_distributes_boxes_across_container_instances(self):
         problem = MultiContainerPackingInput(
             containers=[

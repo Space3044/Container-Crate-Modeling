@@ -3,10 +3,37 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cargo_loading.profile_solver import solve_profile_file
+from cargo_loading.profile_solver import packing_input_from_dict, solve_profile_file
 
 
 class MultiContainerSolverTests(unittest.TestCase):
+    def test_multi_container_input_from_dict_reads_required_container_types(self):
+        problem = packing_input_from_dict(
+            {
+                "containers": [
+                    {
+                        "id": "RECT",
+                        "length": 60,
+                        "cross_section": [[0, 0], [50, 0], [50, 50], [0, 50]],
+                        "quantity": 2,
+                    }
+                ],
+                "boxes": [
+                    {
+                        "id": "BOX-A",
+                        "length": 60,
+                        "width": 50,
+                        "height": 30,
+                        "quantity": 1,
+                        "rotatable": False,
+                        "required_container_types": ["RECT"],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(problem.boxes[0].required_container_types, ("RECT",))
+
     def test_solve_profile_file_writes_multi_container_result(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
