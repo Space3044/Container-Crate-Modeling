@@ -1,6 +1,7 @@
 .ace-tool/
 .playwright-mcp/
 .venv/
+*.egg-info/
 __pycache__/
 outputs/
 .superpowers

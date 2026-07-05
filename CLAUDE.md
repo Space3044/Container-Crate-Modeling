@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-ULD（航空集装箱）装箱原型。给定若干个用 y-z 截面多边形描述的 ULD 和一批长方体箱子，用启发式算法求较优装箱方案，并在浏览器中可视化。纯 Python 标准库实现，无运行时第三方依赖（pyproject.toml 中 dependencies 为空），Python >= 3.13。
+ULD（航空集装箱）装箱原型。给定若干个用 y-z 截面多边形描述的 ULD 和一批长方体箱子，用启发式算法求较优装箱方案，并在浏览器中可视化。纯 Python 标准库实现，无运行时第三方依赖（pyproject.toml 中 dependencies 为空），Python >= 3.12。
 
 ## 常用命令
 
