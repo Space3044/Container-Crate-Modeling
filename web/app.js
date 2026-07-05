@@ -24,6 +24,18 @@ const fallbackInput = {
       ],
     },
     {
+      id: "Q6-2",
+      length: 306,
+      quantity: 0,
+      cross_section: [
+        [0, 0],
+        [240, 0],
+        [240, 220],
+        [120, 240],
+        [0, 240],
+      ],
+    },
+    {
       id: "L",
       length: 346,
       quantity: 0,
@@ -54,7 +66,7 @@ const fallbackInput = {
         [0, 0],
         [240, 0],
         [240, 190],
-        [120, 190],
+        [120, 290],
         [0, 290],
       ],
     },

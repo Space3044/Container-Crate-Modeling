@@ -498,6 +498,7 @@ if (tableBody.innerHTML !== "") {
         expected_containers = [
             ("Q7", 306, [[0, 0], [240, 0], [240, 240], [120, 290], [0, 290]]),
             ("Q6", 306, [[0, 0], [240, 0], [240, 240], [0, 240]]),
+            ("Q6-2", 306, [[0, 0], [240, 0], [240, 220], [120, 240], [0, 240]]),
             ("L", 346, [[0, 0], [240, 0], [240, 160], [0, 160]]),
             ("PGA", 600, [[0, 0], [240, 0], [240, 190], [120, 290], [0, 290]]),
             ("Q5", 306, [[0, 0], [240, 0], [240, 190], [120, 290], [0, 290]]),
@@ -507,6 +508,35 @@ if (tableBody.innerHTML !== "") {
         for container_id, length, _ in expected_containers:
             self.assertIn(f'id: "{container_id}"', script)
             self.assertIn(f"length: {length}", script)
+        for container_id, _, cross_section in expected_containers:
+            max_z = max(z for _, z in cross_section)
+            self.assertEqual(min(y for y, z in cross_section if z == max_z), 0, container_id)
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8") + "\nglobalThis.__fallbackInput = fallbackInput;";
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+process.stdout.write(JSON.stringify(context.__fallbackInput.containers));
+"""
+        completed = subprocess.run(
+            ["node", "-e", node_script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        fallback_containers = json.loads(completed.stdout)
+        self.assertEqual(
+            [(container["id"], container["length"], container["cross_section"]) for container in fallback_containers],
+            expected_containers,
+        )
         self.assertNotIn('id: "BOX-A"', script)
         self.assertNotIn('id: "BOX-B"', script)
         self.assertIn("function nextAlphabeticId", script)
