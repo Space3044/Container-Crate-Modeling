@@ -231,8 +231,8 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("bulkBoxInput", script)
         self.assertIn("140*105*94*20", script)
         self.assertIn("40.5*40.5*14*1", script)
-        self.assertIn(r".split(/\r\n|\n|\r/)", script)
-        self.assertIn(r"line.split(/[\s*＊×xXｘＸ✕✖⨯]+/)", script)
+        self.assertIn("function bulkBoxTokensFromText", script)
+        self.assertIn(r".split(/[\s*＊×xXｘＸ✕✖⨯,，;；]+/)", script)
         self.assertIn("quantity: readNonNegativeInteger(quantity", script)
         self.assertIn('class="box-required-container-types"', script)
         self.assertNotIn('placeholder="Q7"', script)
@@ -889,6 +889,70 @@ vm.runInContext(code, context);
 const ids = context.parseRequiredContainerTypes(" Q7, PGA ， Q5 ");
 if (JSON.stringify(ids) !== JSON.stringify(["Q7", "PGA", "Q5"])) {
   throw new Error(`unexpected required container ids: ${JSON.stringify(ids)}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_bulk_box_import_accepts_multiple_specs_per_line(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+const boxes = context.parseBulkBoxLines(`128*116*146*7
+189*96*115*8
+124*116*106*14
+124*124*109*12
+108*107*106*7
+107*107*104*7
+107*107*105*6
+226*150*179*2
+107*107*68*1
+107*107*86*1
+107*107*105*16
+107*107*87*1
+120*100*119*1
+120*100*148*1
+41*41*14*2
+107*107*105*7
+107*107*51*1
+52*52*18*7
+122*102*108*6 102*100*109*1
+67*58*42*48
+122*104*143*31
+120*112*159*7 140*110*105*10
+190*98*107*7
+116*79*64*3`);
+if (boxes.length !== 26) {
+  throw new Error(`unexpected box count: ${boxes.length}`);
+}
+const expectedSamples = [
+  [0, { length: 128, width: 116, height: 146, quantity: 7, rotatable: true }],
+  [18, { length: 122, width: 102, height: 108, quantity: 6, rotatable: true }],
+  [19, { length: 102, width: 100, height: 109, quantity: 1, rotatable: true }],
+  [22, { length: 120, width: 112, height: 159, quantity: 7, rotatable: true }],
+  [23, { length: 140, width: 110, height: 105, quantity: 10, rotatable: true }],
+  [25, { length: 116, width: 79, height: 64, quantity: 3, rotatable: true }],
+];
+for (const [index, expected] of expectedSamples) {
+  if (JSON.stringify(boxes[index]) !== JSON.stringify(expected)) {
+    throw new Error(`unexpected box at ${index}: ${JSON.stringify(boxes[index])}`);
+  }
 }
 """
         completed = subprocess.run(

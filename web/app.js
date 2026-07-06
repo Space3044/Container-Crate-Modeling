@@ -458,31 +458,42 @@ function clearBoxRows(tableBody = elements.boxTableBody) {
 }
 
 function parseBulkBoxLines(rawValue) {
-  const boxes = String(rawValue)
-    .split(/\r\n|\n|\r/)
-    .map((line, index) => parseBulkBoxLine(line, index))
-    .filter(Boolean);
-  if (boxes.length === 0) {
+  const tokens = bulkBoxTokensFromText(rawValue);
+  if (tokens.length === 0) {
     throw new Error(`请先粘贴箱子尺寸，格式为：${BULK_BOX_EXAMPLE.split("\n")[0]}`);
+  }
+  if (tokens.length % 4 !== 0) {
+    throw new Error("批量箱子格式应为每组：长*宽*高*数量");
+  }
+  const boxes = [];
+  for (let index = 0; index < tokens.length; index += 4) {
+    boxes.push(parseBulkBoxParts(tokens.slice(index, index + 4), index / 4));
   }
   return boxes;
 }
 
 function parseBulkBoxLine(rawLine, index) {
-  const line = rawLine.trim();
-  if (!line) {
+  const tokens = bulkBoxTokensFromText(rawLine);
+  if (tokens.length === 0) {
     return null;
   }
-  const parts = line.split(/[\s*＊×xXｘＸ✕✖⨯]+/).filter(Boolean);
-  if (parts.length !== 4) {
+  if (tokens.length !== 4) {
     throw new Error(`第 ${index + 1} 行格式应为：长*宽*高*数量`);
   }
+  return parseBulkBoxParts(tokens, index);
+}
+
+function bulkBoxTokensFromText(rawValue) {
+  return String(rawValue).trim().split(/[\s*＊×xXｘＸ✕✖⨯,，;；]+/).filter(Boolean);
+}
+
+function parseBulkBoxParts(parts, index) {
   const [length, width, height, quantity] = parts;
   return {
-    length: readPositiveNumber(length, `第 ${index + 1} 行长度`),
-    width: readPositiveNumber(width, `第 ${index + 1} 行宽度`),
-    height: readPositiveNumber(height, `第 ${index + 1} 行高度`),
-    quantity: readNonNegativeInteger(quantity, `第 ${index + 1} 行数量`),
+    length: readPositiveNumber(length, `第 ${index + 1} 组长度`),
+    width: readPositiveNumber(width, `第 ${index + 1} 组宽度`),
+    height: readPositiveNumber(height, `第 ${index + 1} 组高度`),
+    quantity: readNonNegativeInteger(quantity, `第 ${index + 1} 组数量`),
     rotatable: true,
   };
 }
