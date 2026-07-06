@@ -429,7 +429,7 @@ function addBoxRow(box = {}) {
     <td><input class="box-height" type="number" min="1" step="1" value="${box.height ?? 30}" aria-label="箱子高度" /></td>
     <td><input class="box-quantity" type="number" min="0" step="1" value="${box.quantity ?? 1}" aria-label="箱子数量" /></td>
     <td><input class="box-rotatable" type="checkbox" ${box.rotatable ?? true ? "checked" : ""} aria-label="允许长宽互换" /></td>
-    <td><input class="box-required-container-types" type="text" value="${escapeAttribute(requiredContainerTypes)}" placeholder="Q7" aria-label="指定 ULD 类型" /></td>
+    <td><input class="box-required-container-types" type="text" value="${escapeAttribute(requiredContainerTypes)}" aria-label="指定 ULD 类型" /></td>
     <td><button class="icon-button" type="button" aria-label="删除箱子">×</button></td>
   `;
   row.querySelector("button").addEventListener("click", () => row.remove());

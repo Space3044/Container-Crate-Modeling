@@ -235,6 +235,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn(r"line.split(/[\s*＊×xXｘＸ✕✖⨯]+/)", script)
         self.assertIn("quantity: readNonNegativeInteger(quantity", script)
         self.assertIn('class="box-required-container-types"', script)
+        self.assertNotIn('placeholder="Q7"', script)
         self.assertIn("parseRequiredContainerTypes", script)
         self.assertIn("exportExcelButton.addEventListener", script)
         self.assertIn("exportHtmlButton.addEventListener", script)
