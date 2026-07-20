@@ -8,6 +8,7 @@ from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from cargo_loading.profile_packer import pack_packing
@@ -68,13 +69,20 @@ def create_handler(
 
             try:
                 payload = self._read_json_body()
+                started_at = perf_counter()
                 problem = packing_input_from_dict(payload)
                 result = pack_packing(problem)
+                elapsed_seconds = perf_counter() - started_at
             except Exception as error:
                 self._send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
                 return
 
-            self._send_json({"result": packing_result_to_dict(result)})
+            self._send_json(
+                {
+                    "result": packing_result_to_dict(result),
+                    "elapsed_seconds": elapsed_seconds,
+                }
+            )
 
         def log_message(self, format: str, *args: Any) -> None:
             return

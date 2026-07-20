@@ -26,6 +26,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "clearBoxesButton",
             "bulkBoxInput",
             "importBoxesButton",
+            "boxTotalCount",
             "searchModeSelect",
             "activeContainerStats",
             "selectedBoxDetails",
@@ -46,6 +47,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("添加 ULD", html)
         self.assertIn("批量粘贴箱子", html)
         self.assertIn("识别并添加箱子", html)
+        self.assertIn("箱子总数", html)
         self.assertIn("清空箱子", html)
         self.assertIn("算法模式", html)
         self.assertIn('value="fast"', html)
@@ -139,8 +141,10 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "renderHistoryRecords",
             "selectHistoryRecord",
             "historyRecordLabel",
+            "formatHistoryElapsed",
             "importBulkBoxes",
             "clearBoxRows",
+            "updateBoxTotalCount",
             "parseBulkBoxLines",
             "parseBulkBoxLine",
             "exportExcel",
@@ -278,7 +282,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn('fetch("/api/history")', script)
         self.assertIn('fetch("/api/history", {', script)
         self.assertIn("await loadPersistedHistoryRecords()", script)
-        self.assertIn("await addHistoryRecord(input, data.result)", script)
+        self.assertIn("await addHistoryRecord(input, data.result, elapsedSeconds)", script)
         self.assertIn("async function addHistoryRecord", script)
         self.assertIn("localStorage", script)
         self.assertIn("state.historyRecords", script)
@@ -412,6 +416,11 @@ if (tableBody.innerHTML !== "") {
         self.assertIn(".history-record", css)
         self.assertIn(".bulk-box-import", css)
         self.assertIn(".bulk-box-import textarea", css)
+        self.assertIn(
+            ".bulk-box-actions {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  justify-content: space-between;",
+            css,
+        )
+        self.assertIn(".box-total-count", css)
         self.assertIn("--result-panel-height: calc(var(--history-list-height) + 360px)", css)
         self.assertIn("--input-panel-height: var(--result-panel-height)", css)
         self.assertIn("--history-list-height: 592px", css)
@@ -454,6 +463,7 @@ if (tableBody.innerHTML !== "") {
         self.assertIn("max-height: var(--history-list-height)", css)
         self.assertIn("height: var(--history-record-height)", css)
         self.assertIn(".history-record .history-mode", css)
+        self.assertIn(".history-record .history-elapsed", css)
         self.assertIn("top: 12px", css)
         self.assertIn("right: 18px", css)
         self.assertIn(".uld-panel .table-scroll,\n.boxes-panel .table-scroll {\n  overflow-x: hidden;", css)
@@ -468,11 +478,92 @@ if (tableBody.innerHTML !== "") {
         self.assertNotIn(".result-overview,\n  .result-details {\n    height: auto;", css)
         self.assertNotIn("max-height: calc(100vh - 112px)", css)
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)
+
         self.assertNotIn(".result-details {\n  display: grid;\n  gap: 14px;\n  align-content: start;\n  position: sticky", css)
         self.assertIn("pointer-events: none", css)
         self.assertIn("border: 1px solid var(--tooltip-border)", css)
         self.assertIn("box-shadow: var(--scene-canvas-shadow)", css)
         self.assertIn("background: var(--scene-canvas-bg)", css)
+
+    def test_box_total_count_sums_quantities_and_ignores_incomplete_values(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+vm.runInContext(`
+elements.boxTableBody = {
+  querySelectorAll: () => [
+    { value: "7" },
+    { value: "3" },
+    { value: "" },
+    { value: "invalid" },
+  ],
+};
+elements.boxTotalCount = { textContent: "" };
+updateBoxTotalCount();
+if (elements.boxTotalCount.textContent !== "10") {
+  throw new Error("unexpected box total: " + elements.boxTotalCount.textContent);
+}
+`, context);
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_history_record_label_formats_elapsed_time_and_supports_old_records(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+const current = context.historyRecordLabel({
+  createdAt: "2026-07-20T05:54:26.000Z",
+  input: { search_mode: "balanced" },
+  result: { loaded_count: 12, unloaded_count: 0, volume_utilization: 0.7524 },
+  elapsedSeconds: 12.34,
+});
+if (!current.includes('class="history-elapsed">耗时 12.3 秒</span>')) {
+  throw new Error("elapsed time missing: " + current);
+}
+const legacy = context.historyRecordLabel({
+  createdAt: "2026-07-20T05:54:26.000Z",
+  input: { search_mode: "balanced" },
+  result: { loaded_count: 12, unloaded_count: 0, volume_utilization: 0.7524 },
+});
+if (!legacy.includes('class="history-elapsed">耗时 --</span>')) {
+  throw new Error("legacy elapsed placeholder missing: " + legacy);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
 
     def test_visualizer_styles_define_light_tokens_and_dark_overrides(self):
         css = Path("web/styles.css").read_text(encoding="utf-8")

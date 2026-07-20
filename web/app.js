@@ -195,6 +195,7 @@ function cacheElements() {
   elements.clearBoxesButton = document.getElementById("clearBoxesButton");
   elements.bulkBoxInput = document.getElementById("bulkBoxInput");
   elements.importBoxesButton = document.getElementById("importBoxesButton");
+  elements.boxTotalCount = document.getElementById("boxTotalCount");
   elements.searchModeSelect = document.getElementById("searchModeSelect");
   elements.themeToggleButton = document.getElementById("themeToggleButton");
   elements.calculateButton = document.getElementById("calculateButton");
@@ -350,6 +351,7 @@ function writeInputToForm(input) {
   normalized.containers.forEach((container) => addContainerRow(container));
   elements.boxTableBody.innerHTML = "";
   normalized.boxes.forEach((box) => addBoxRow(box));
+  updateBoxTotalCount();
   elements.searchModeSelect.value = normalized.search_mode;
 }
 
@@ -432,8 +434,13 @@ function addBoxRow(box = {}) {
     <td><input class="box-required-container-types" type="text" value="${escapeAttribute(requiredContainerTypes)}" aria-label="指定 ULD 类型" /></td>
     <td><button class="icon-button" type="button" aria-label="删除箱子">×</button></td>
   `;
-  row.querySelector("button").addEventListener("click", () => row.remove());
+  row.querySelector(".box-quantity").addEventListener("input", updateBoxTotalCount);
+  row.querySelector("button").addEventListener("click", () => {
+    row.remove();
+    updateBoxTotalCount();
+  });
   elements.boxTableBody.appendChild(row);
+  updateBoxTotalCount();
 }
 
 function importBulkBoxes() {
@@ -452,9 +459,21 @@ function importBulkBoxes() {
 
 function clearBoxRows(tableBody = elements.boxTableBody) {
   tableBody.innerHTML = "";
+  updateBoxTotalCount();
   if (elements.errorMessage) {
     clearError();
   }
+}
+
+function updateBoxTotalCount() {
+  if (!elements.boxTableBody || !elements.boxTotalCount) {
+    return;
+  }
+  const total = [...elements.boxTableBody.querySelectorAll(".box-quantity")].reduce((sum, input) => {
+    const quantity = Number(input.value);
+    return sum + (Number.isInteger(quantity) && quantity > 0 ? quantity : 0);
+  }, 0);
+  elements.boxTotalCount.textContent = String(total);
 }
 
 function parseBulkBoxLines(rawValue) {
@@ -2892,6 +2911,7 @@ async function calculatePacking(options = {}) {
     setBusy(true);
     clearError();
     const input = readInputFromForm();
+    const requestStartedAt = Date.now();
     const response = await fetch("/api/pack", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2903,8 +2923,12 @@ async function calculatePacking(options = {}) {
     }
     state.input = input;
     state.result = data.result;
+    const serverElapsedSeconds = Number(data.elapsed_seconds);
+    const elapsedSeconds = Number.isFinite(serverElapsedSeconds)
+      ? serverElapsedSeconds
+      : Math.max(0, (Date.now() - requestStartedAt) / 1000);
     if (options.recordHistory !== false) {
-      await addHistoryRecord(input, data.result);
+      await addHistoryRecord(input, data.result, elapsedSeconds);
     }
     state.selectedContainerId = null;
     state.selectedInstanceId = null;
@@ -2983,12 +3007,13 @@ function normalizeHistoryRecords(records) {
     .slice(0, MAX_HISTORY_RECORDS);
 }
 
-async function addHistoryRecord(input, result) {
+async function addHistoryRecord(input, result, elapsedSeconds) {
   const record = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     createdAt: new Date().toISOString(),
     input: structuredClone(input),
     result: structuredClone(result),
+    elapsedSeconds: Number.isFinite(Number(elapsedSeconds)) ? Math.max(0, Number(elapsedSeconds)) : null,
   };
   state.historyRecords = [record, ...state.historyRecords].slice(0, MAX_HISTORY_RECORDS);
   state.selectedHistoryId = record.id;
@@ -3052,6 +3077,7 @@ function historyRecordLabel(record) {
   const unloaded = result.unloaded_count ?? 0;
   const util = formatPercent(result.volume_utilization);
   const mode = searchModeLabel(record.input?.search_mode ?? "balanced");
+  const elapsed = formatHistoryElapsed(record.elapsedSeconds);
   return `
     <span class="history-time">${escapeHtml(time)}</span>
     <span class="history-mode">${escapeHtml(mode)}</span>
@@ -3059,8 +3085,23 @@ function historyRecordLabel(record) {
       <span class="history-stat history-loaded"><em>已装</em><b>${loaded}</b></span>
       <span class="history-stat history-unloaded"><em>未装</em><b>${unloaded}</b></span>
     </span>
+    <span class="history-elapsed">${escapeHtml(elapsed)}</span>
     <span class="history-util">${util}</span>
   `;
+}
+
+function formatHistoryElapsed(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return "耗时 --";
+  }
+  if (seconds < 60) {
+    return `耗时 ${seconds.toFixed(seconds < 10 ? 2 : 1)} 秒`;
+  }
+  const totalSeconds = Math.round(seconds);
+  const minutes = Math.floor(totalSeconds / 60);
+  const remainingSeconds = totalSeconds % 60;
+  return `耗时 ${minutes}分${String(remainingSeconds).padStart(2, "0")}秒`;
 }
 
 function searchModeLabel(value) {

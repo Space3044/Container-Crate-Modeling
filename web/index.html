@@ -88,7 +88,13 @@
                 placeholder="每行一个箱型：长*宽*高*数量&#10;例如：140*105*94*20&#10;40.5*40.5*14*1"
               ></textarea>
             </label>
-            <button id="importBoxesButton" type="button" class="secondary-button small-button">识别并添加箱子</button>
+            <div class="bulk-box-actions">
+              <output class="box-total-count" aria-live="polite">
+                <span>箱子总数</span>
+                <strong id="boxTotalCount">0</strong>
+              </output>
+              <button id="importBoxesButton" type="button" class="secondary-button small-button">识别并添加箱子</button>
+            </div>
           </div>
           <div class="table-scroll">
             <table class="box-table">

@@ -38,6 +38,7 @@ class WebServerTests(unittest.TestCase):
             self.assertEqual(response["result"]["unloaded_count"], 0)
             self.assertTrue(response["result"]["validation_passed"])
             self.assertEqual(response["result"]["placements"][0]["instance_id"], "BOX-A-001")
+            self.assertGreaterEqual(response["elapsed_seconds"], 0)
         finally:
             server.shutdown()
             server.server_close()
