@@ -1671,11 +1671,36 @@ def _select_global_beam_states(
     unique_states = {}
     for state in states:
         unique_states[_global_state_signature(state)] = state
-    return sorted(
+    ranked_states = sorted(
         unique_states.values(),
         key=lambda state: _global_state_score(problem, state),
         reverse=True,
-    )[:beam_width]
+    )
+    selected = ranked_states[:beam_width]
+    if beam_width <= 1 or len(ranked_states) <= beam_width:
+        return selected
+
+    # 层、立柱和重复箱型分支一次可以放入多个箱子，普通分支通常只放一个。
+    # 单按“剩余箱数”裁剪会让批量小箱分支挤掉大体积箱子的长期可行路径。
+    # 为总体积进展最好的状态保留一个 beam 名额，其余名额仍沿用原评分。
+    volume_progress_leader = max(
+        ranked_states,
+        key=lambda state: _global_volume_progress_score(problem, state),
+    )
+    if all(state is not volume_progress_leader for state in selected):
+        selected[-1] = volume_progress_leader
+        selected.sort(key=lambda state: _global_state_score(problem, state), reverse=True)
+    return selected
+
+
+def _global_volume_progress_score(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+) -> tuple[float, ...]:
+    """为 beam 保留体积进展路径，避免不同批量步长造成单一方向剪枝。"""
+    required_unloaded_count = _required_unloaded_count_from_state(problem, state)
+    used_volume = sum(container.used_volume for container in state.containers)
+    return (-required_unloaded_count, used_volume)
 
 
 def _global_state_score(problem: MultiContainerPackingInput, state: GlobalPackingState) -> tuple[float, ...]:

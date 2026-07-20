@@ -801,6 +801,57 @@ class MultiContainerPackerTests(unittest.TestCase):
         self.assertGreaterEqual(result.loaded_count, 67)
         self.assertTrue(result.validation_passed)
 
+    def test_beam_keeps_large_box_path_when_small_column_branch_advances_more_boxes(self):
+        container = ContainerSpec(
+            id="Q7",
+            length=306,
+            cross_section=[(0, 0), (240, 0), (240, 240), (120, 290), (0, 290)],
+            quantity=1,
+        )
+        dimensions = [
+            (118, 80, 225, 1),
+            (118, 80, 225, 1),
+            (118, 80, 225, 1),
+            (118, 80, 225, 1),
+            (118, 80, 225, 1),
+            (40, 37, 19, 1),
+            (48, 46, 17, 1),
+            (118, 80, 225, 1),
+            (59, 49, 46, 3),
+            (118, 80, 225, 1),
+        ]
+
+        def solve(require_q7: bool):
+            boxes = [
+                BoxSpec(
+                    id=f"BOX-{index:02d}",
+                    length=length,
+                    width=width,
+                    height=height,
+                    quantity=quantity,
+                    required_container_types=("Q7",) if require_q7 and (length, width, height) == (118, 80, 225) else (),
+                )
+                for index, (length, width, height, quantity) in enumerate(dimensions)
+            ]
+            return pack_multi_profile(
+                MultiContainerPackingInput(
+                    containers=[container],
+                    boxes=boxes,
+                    search_mode="balanced",
+                )
+            )
+
+        automatic_result = solve(require_q7=False)
+        constrained_result = solve(require_q7=True)
+
+        self.assertEqual(automatic_result.loaded_count, 12)
+        self.assertEqual(automatic_result.unloaded_count, 0)
+        self.assertEqual(constrained_result.loaded_count, 12)
+        self.assertEqual(constrained_result.unloaded_count, 0)
+        self.assertEqual(automatic_result.used_volume, constrained_result.used_volume)
+        self.assertTrue(automatic_result.validation_passed)
+        self.assertTrue(constrained_result.validation_passed)
+
 
 if __name__ == "__main__":
     unittest.main()
