@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import cargo_loading.profile_packer as profile_packer
-from cargo_loading.profile_models import BoxSpec, ContainerSpec, MultiContainerPackingInput, PackingInputError
+from cargo_loading.profile_models import BoxPlacement, BoxSpec, ContainerSpec, MultiContainerPackingInput, PackingInputError
 from cargo_loading.profile_packer import (
     MAX_BATCH_PLACEMENTS,
     MAX_GLOBAL_BOX_TYPE_CANDIDATES,
@@ -805,6 +805,60 @@ class MultiContainerPackerTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "worker failed"):
                 profile_packer._best_of_rounds(problem, profile_packer._round_plan(problem))
+
+    def test_volume_progress_path_uses_separate_frontier_from_standard_beam(self):
+        container = ContainerSpec(
+            id="RECT",
+            length=100,
+            cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+            quantity=1,
+        )
+        problem = MultiContainerPackingInput(
+            containers=[container],
+            boxes=[BoxSpec(id="BOX", length=1, width=1, height=1, quantity=10)],
+        )
+
+        def state(name: str, remaining: int, used_volume: float):
+            placement = BoxPlacement(
+                box_id="BOX",
+                instance_id=name,
+                x=0,
+                y=0,
+                z=0,
+                length=used_volume,
+                width=1,
+                height=1,
+            )
+            return profile_packer.GlobalPackingState(
+                containers=[
+                    profile_packer.ContainerState(
+                        spec=container,
+                        container_id="RECT-001",
+                        placements=[placement],
+                        free_spaces=[],
+                    )
+                ],
+                remaining_counter=profile_packer.Counter({"BOX": remaining}),
+            )
+
+        count_leader = state("COUNT-LEADER", remaining=1, used_volume=10)
+        count_runner_up = state("COUNT-RUNNER-UP", remaining=2, used_volume=20)
+        volume_leader = state("VOLUME-LEADER", remaining=3, used_volume=90)
+
+        selected = profile_packer._select_global_beam_states(
+            problem,
+            [count_leader, count_runner_up, volume_leader],
+            beam_width=2,
+        )
+        supplemental = profile_packer._supplemental_volume_progress_state(
+            problem,
+            [count_leader, count_runner_up, volume_leader],
+            selected,
+            beam_width=2,
+        )
+
+        self.assertEqual(selected, [count_leader, count_runner_up])
+        self.assertIs(supplemental, volume_leader)
 
     def test_layer_building_reaches_hand_verified_pga_optimum(self):
         # 现场反例：PGA 五边形截面 + 27 个可旋转 BOX-A。手算最优是

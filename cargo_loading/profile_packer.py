@@ -361,26 +361,66 @@ def _pack_multi_profile_variant(
 ) -> MultiContainerPackingResult:
     box_by_id = {box.id: box for box in problem.boxes}
     limits = _global_search_limits(problem)
-    states = [_initial_global_state(problem)]
+    primary_states = [_initial_global_state(problem)]
+    volume_states: list[GlobalPackingState] = []
+    volume_rng: random.Random | None = None
+    if rng is not None:
+        volume_rng = random.Random()
+        volume_rng.setstate(rng.getstate())
     for _ in range(min(sum(box.quantity for box in problem.boxes), limits.max_steps)):
-        next_states: list[GlobalPackingState] = []
-        expanded_any = False
-        for state in states:
-            branches = _global_placement_branches(problem, state, box_by_id, limits, variant=variant, rng=rng)
-            if branches:
-                expanded_any = True
-                next_states.extend(branches)
-            else:
-                next_states.append(state)
-        if not expanded_any:
+        next_primary_states, primary_expanded = _expand_global_states(
+            problem,
+            primary_states,
+            box_by_id,
+            limits,
+            variant,
+            rng,
+        )
+        next_volume_states, volume_expanded = _expand_global_states(
+            problem,
+            volume_states,
+            box_by_id,
+            limits,
+            variant,
+            volume_rng,
+        )
+        if not primary_expanded and not volume_expanded:
             break
-        states = _select_global_beam_states(problem, next_states, limits.beam_width)
+        primary_states = _select_global_beam_states(problem, next_primary_states, limits.beam_width)
+        volume_state = _supplemental_volume_progress_state(
+            problem,
+            [*next_primary_states, *next_volume_states],
+            primary_states,
+            limits.beam_width,
+        )
+        volume_states = [volume_state] if volume_state is not None else []
 
+    states = [*primary_states, *volume_states]
     best_state = max(states, key=lambda state: _global_state_score(problem, state))
     best_state = _refill_remaining_boxes_in_used_containers(problem, best_state, box_by_id, limits)
     best_state = _rescue_unloaded_boxes(problem, best_state, box_by_id, limits)
     best_state = _local_rearrange_state(problem, best_state, box_by_id, limits)
     return _multi_result_from_global_state(problem, best_state)
+
+
+def _expand_global_states(
+    problem: MultiContainerPackingInput,
+    states: list[GlobalPackingState],
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+    variant: int,
+    rng: random.Random | None,
+) -> tuple[list[GlobalPackingState], bool]:
+    next_states: list[GlobalPackingState] = []
+    expanded_any = False
+    for state in states:
+        branches = _global_placement_branches(problem, state, box_by_id, limits, variant=variant, rng=rng)
+        if branches:
+            expanded_any = True
+            next_states.extend(branches)
+        else:
+            next_states.append(state)
+    return next_states, expanded_any
 
 
 def _initial_global_state(problem: MultiContainerPackingInput) -> GlobalPackingState:
@@ -1698,26 +1738,33 @@ def _select_global_beam_states(
     unique_states = {}
     for state in states:
         unique_states[_global_state_signature(state)] = state
-    ranked_states = sorted(
+    return sorted(
         unique_states.values(),
         key=lambda state: _global_state_score(problem, state),
         reverse=True,
-    )
-    selected = ranked_states[:beam_width]
-    if beam_width <= 1 or len(ranked_states) <= beam_width:
-        return selected
+    )[:beam_width]
+
+
+def _supplemental_volume_progress_state(
+    problem: MultiContainerPackingInput,
+    candidates: list[GlobalPackingState],
+    primary_states: list[GlobalPackingState],
+    beam_width: int,
+) -> GlobalPackingState | None:
+    if beam_width <= 1 or not candidates:
+        return None
 
     # 层、立柱和重复箱型分支一次可以放入多个箱子，普通分支通常只放一个。
     # 单按“剩余箱数”裁剪会让批量小箱分支挤掉大体积箱子的长期可行路径。
-    # 为总体积进展最好的状态保留一个 beam 名额，其余名额仍沿用原评分。
+    # 体积路径使用独立的补充 frontier，不能进入或替换主 beam。
     volume_progress_leader = max(
-        ranked_states,
+        candidates,
         key=lambda state: _global_volume_progress_score(problem, state),
     )
-    if all(state is not volume_progress_leader for state in selected):
-        selected[-1] = volume_progress_leader
-        selected.sort(key=lambda state: _global_state_score(problem, state), reverse=True)
-    return selected
+    primary_signatures = {_global_state_signature(state) for state in primary_states}
+    if _global_state_signature(volume_progress_leader) in primary_signatures:
+        return None
+    return volume_progress_leader
 
 
 def _global_volume_progress_score(

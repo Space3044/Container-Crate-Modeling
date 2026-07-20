@@ -689,8 +689,10 @@ test_required_container_types_parse_comma_separated_values
 ```text
 先按原有全局评分选取 beam
 额外找出满足人工约束前提下已装体积最大的进展状态
-若该状态被原 beam 完全裁掉，为它保留一个名额
-其余 beam 名额、搜索轮数、合法性规则和复合分支保持不变
+主 beam 和体积进展路径使用相互隔离的 frontier
+主 beam 只从自身分支中继续选优，行为与增加体积路径前完全一致
+体积路径使用独立 RNG 和一个补充槽，不能进入或替换主 beam
+搜索轮数、合法性规则和复合分支保持不变
 ```
 
 该机制不包含 Q7、箱子尺寸或特定箱型 ID 判断，处理的是所有“不同分支一次
@@ -700,6 +702,7 @@ test_required_container_types_parse_comma_separated_values
 
 ```text
 test_beam_keeps_large_box_path_when_small_column_branch_advances_more_boxes
+test_volume_progress_path_uses_separate_frontier_from_standard_beam
 ```
 
 效果：
