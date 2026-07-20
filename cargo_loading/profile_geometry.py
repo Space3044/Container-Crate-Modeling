@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 Point2D = tuple[float, float]
+PolygonKey = tuple[Point2D, ...]
 
 EPSILON = 1e-9
 
@@ -35,6 +38,17 @@ def is_convex_polygon(points: list[Point2D]) -> bool:
 
 def rectangle_inside_polygon(y: float, z: float, width: float, height: float, polygon: list[Point2D]) -> bool:
     # 凸多边形前提下，4 个角点在内即整个矩形在内
+    return _rectangle_inside_polygon_cached(y, z, width, height, _polygon_key(polygon))
+
+
+@lru_cache(maxsize=131_072)
+def _rectangle_inside_polygon_cached(
+    y: float,
+    z: float,
+    width: float,
+    height: float,
+    polygon: PolygonKey,
+) -> bool:
     corners = [
         (y, z),
         (y + width, z),
@@ -46,6 +60,15 @@ def rectangle_inside_polygon(y: float, z: float, width: float, height: float, po
 
 def convex_y_interval(polygon: list[Point2D], z_low: float, z_high: float) -> tuple[float, float] | None:
     """凸多边形在高度区间 [z_low, z_high] 内全程可用的 y 区间。"""
+    return _convex_y_interval_cached(_polygon_key(polygon), z_low, z_high)
+
+
+def _polygon_key(polygon: list[Point2D]) -> PolygonKey:
+    return tuple((y, z) for y, z in polygon)
+
+
+@lru_cache(maxsize=131_072)
+def _convex_y_interval_cached(polygon: PolygonKey, z_low: float, z_high: float) -> tuple[float, float] | None:
     low_interval = _y_interval_at_z(polygon, z_low)
     high_interval = _y_interval_at_z(polygon, z_high)
     if low_interval is None or high_interval is None:
@@ -57,7 +80,8 @@ def convex_y_interval(polygon: list[Point2D], z_low: float, z_high: float) -> tu
     return (left, right)
 
 
-def _y_interval_at_z(polygon: list[Point2D], z: float) -> tuple[float, float] | None:
+@lru_cache(maxsize=131_072)
+def _y_interval_at_z(polygon: PolygonKey, z: float) -> tuple[float, float] | None:
     crossings: list[float] = []
     count = len(polygon)
     for index in range(count):

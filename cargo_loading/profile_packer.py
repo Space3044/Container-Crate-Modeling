@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 
 from cargo_loading.profile_geometry import convex_y_interval, polygon_area, rectangle_inside_polygon
@@ -24,6 +25,7 @@ from cargo_loading.profile_models import (
 
 
 Point3D = tuple[float, float, float]
+PlacementScore = tuple[float, float, float, float, float, float, int, float, float, float]
 EPSILON = 1e-9
 DEFAULT_BEAM_WIDTH = 30
 MAX_PLACEMENT_BRANCHES = 20
@@ -74,12 +76,37 @@ class ContainerState:
     container_id: str
     placements: list[BoxPlacement]
     free_spaces: list[FreeSpace]
+    container_volume: float = -1.0
+    used_volume: float = -1.0
+    max_x: float = -1.0
+    max_y: float = -1.0
+    max_z: float = -1.0
+
+    def __post_init__(self) -> None:
+        if self.container_volume < 0:
+            self.container_volume = self.spec.length * polygon_area(self.spec.cross_section)
+        if self.used_volume < 0:
+            self.used_volume = sum(placement.volume for placement in self.placements)
+        if self.max_x < 0 or self.max_y < 0 or self.max_z < 0:
+            self.max_x, self.max_y, self.max_z = _bounding_extents(self.placements)
 
 
 @dataclass
 class GlobalPackingState:
     containers: list[ContainerState]
     remaining_counter: Counter[str]
+
+
+@dataclass(frozen=True)
+class PlacementScanIndex:
+    placements: list[BoxPlacement]
+    x_starts: dict[float, tuple[int, ...]]
+    x_ends: dict[float, tuple[int, ...]]
+    y_starts: dict[float, tuple[int, ...]]
+    y_ends: dict[float, tuple[int, ...]]
+    z_starts: dict[float, tuple[int, ...]]
+    z_ends: dict[float, tuple[int, ...]]
+    top_heights: tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -600,7 +627,7 @@ def _candidate_container_pool(
     )[: limits.container_candidates]
     fresh_candidates = sorted(
         indexed,
-        key=lambda item: (sum(placement.volume for placement in item[1].placements), item[0]),
+        key=lambda item: (item[1].used_volume, item[0]),
     )[: limits.container_candidates]
     return _unique_container_options([*compact_candidates, *fresh_candidates])
 
@@ -617,22 +644,17 @@ def _unique_container_options(options: list[tuple[int, ContainerState]]) -> list
 
 
 def _container_pool_score(container: ContainerState, box: BoxSpec) -> tuple[float, float]:
-    used_volume = sum(placement.volume for placement in container.placements)
     remaining_after_box = _container_remaining_volume(container) - box.volume
-    return (used_volume, -remaining_after_box)
+    return (container.used_volume, -remaining_after_box)
 
 
 def _container_remaining_volume(container: ContainerState) -> float:
-    container_volume = container.spec.length * polygon_area(container.spec.cross_section)
-    used_volume = sum(placement.volume for placement in container.placements)
-    return container_volume - used_volume
+    return container.container_volume - container.used_volume
 
 
 def _container_option_score(container: ContainerState, first_candidate: BoxPlacement) -> tuple[float, float]:
-    used_volume = sum(placement.volume for placement in container.placements)
-    container_volume = container.spec.length * polygon_area(container.spec.cross_section)
-    slack_after_placement = container_volume - used_volume - first_candidate.volume
-    return (used_volume, -slack_after_placement)
+    slack_after_placement = container.container_volume - container.used_volume - first_candidate.volume
+    return (container.used_volume, -slack_after_placement)
 
 
 def _candidate_box_types(
@@ -1582,13 +1604,12 @@ def _best_refill_option(
         if not _box_can_fit_container(box, container_state.spec) or _container_remaining_volume(container_state) < box.volume:
             continue
         profile_input = _profile_input_for_container(problem, container_state)
-        free_spaces = _free_spaces_for_placements(profile_input, container_state.placements, limits=limits)
         candidates = _placement_candidates(
             box,
             instance_id,
             profile_input,
             container_state.placements,
-            free_spaces,
+            container_state.free_spaces,
         )
         if candidates:
             options.append((container_index, container_state, profile_input, candidates[0]))
@@ -1631,6 +1652,11 @@ def _place_box_in_global_state(
         container_id=container_state.container_id,
         placements=next_placements,
         free_spaces=next_free_spaces,
+        container_volume=container_state.container_volume,
+        used_volume=container_state.used_volume + placement.volume,
+        max_x=max(container_state.max_x, placement.x + placement.length),
+        max_y=max(container_state.max_y, placement.y + placement.width),
+        max_z=max(container_state.max_z, placement.z + placement.height),
     )
     next_containers = [*state.containers]
     next_containers[container_index] = next_container
@@ -1653,7 +1679,7 @@ def _select_global_beam_states(
 
 
 def _global_state_score(problem: MultiContainerPackingInput, state: GlobalPackingState) -> tuple[float, ...]:
-    used_volume = sum(placement.volume for container in state.containers for placement in container.placements)
+    used_volume = sum(container.used_volume for container in state.containers)
     loaded_count = sum(len(container.placements) for container in state.containers)
     unloaded_count = sum(quantity for quantity in state.remaining_counter.values() if quantity > 0)
     required_unloaded_count = _required_unloaded_count_from_state(problem, state)
@@ -1798,8 +1824,7 @@ def _profile_input_for_container(problem: MultiContainerPackingInput, container_
 
 
 def _container_bounding_volume(container: ContainerState) -> float:
-    max_x, max_y, max_z = _bounding_extents(container.placements)
-    return max_x * max_y * max_z
+    return container.max_x * container.max_y * container.max_z
 
 
 def _used_container_count(containers: list[ContainerState]) -> int:
@@ -1812,9 +1837,8 @@ def _active_container_utilization(containers: list[ContainerState]) -> float:
     for container in containers:
         if not container.placements:
             continue
-        volume = container.spec.length * polygon_area(container.spec.cross_section)
-        active_volume += volume
-        used_volume += sum(placement.volume for placement in container.placements)
+        active_volume += container.container_volume
+        used_volume += container.used_volume
     return used_volume / active_volume if active_volume else 0
 
 
@@ -1895,8 +1919,12 @@ def _placement_candidates(
     placements: list[BoxPlacement],
     free_spaces: list[FreeSpace],
 ) -> list[BoxPlacement]:
-    candidates: list[BoxPlacement] = []
+    candidates: list[tuple[BoxPlacement, PlacementScore]] = []
     seen: set[tuple[float, float, float, float, float, float]] = set()
+    current_extents = _bounding_extents(placements)
+    scan_index = _placement_scan_index(placements)
+    max_y = max(y for y, _ in problem.uld.cross_section)
+    max_z = max(z for _, z in problem.uld.cross_section)
     for space in free_spaces:
         for length, width, height in _orientation_options(box):
             position = _position_in_space(space, length, width, height, problem)
@@ -1917,9 +1945,22 @@ def _placement_candidates(
                 width=width,
                 height=height,
             )
-            if _placement_is_valid(problem, placement, placements):
-                candidates.append(placement)
-    return sorted(candidates, key=lambda placement: _placement_score(problem, placements, placement))
+            metrics = _placement_candidate_metrics(problem, placement, scan_index, max_y, max_z)
+            if metrics is not None:
+                support_ratio, dominant_support_ratio, contact_count = metrics
+                candidates.append(
+                    (
+                        placement,
+                        _placement_score(
+                            placement,
+                            current_extents,
+                            support_ratio,
+                            dominant_support_ratio,
+                            contact_count,
+                        ),
+                    )
+                )
+    return [placement for placement, _score in sorted(candidates, key=lambda item: item[1])]
 
 
 def _position_in_space(
@@ -1946,23 +1987,123 @@ def _position_in_space(
 
 
 def _placement_score(
-    problem: ProfilePackingInput,
-    placements: list[BoxPlacement],
     placement: BoxPlacement,
-) -> tuple[float, float, float, float, float, float, int, float, float, float]:
-    max_x, max_y, max_z = _bounding_extents([*placements, placement])
+    current_extents: Point3D,
+    support_ratio: float,
+    dominant_support_ratio: float,
+    contact_count: int,
+) -> PlacementScore:
+    max_x = max(current_extents[0], placement.x + placement.length)
+    max_y = max(current_extents[1], placement.y + placement.width)
+    max_z = max(current_extents[2], placement.z + placement.height)
     bounding_volume = max_x * max_y * max_z
     return (
         bounding_volume,
         max_z,
         max_y,
         max_x,
-        -_support_ratio(placement, placements),
-        -_dominant_support_ratio(placement, placements),
-        -_contact_count(problem, placements, placement),
+        -support_ratio,
+        -dominant_support_ratio,
+        -contact_count,
         placement.z,
         placement.y,
         placement.x,
+    )
+
+
+def _placement_candidate_metrics(
+    problem: ProfilePackingInput,
+    placement: BoxPlacement,
+    scan_index: PlacementScanIndex,
+    max_y: float,
+    max_z: float,
+) -> tuple[float, float, int] | None:
+    """一次扫描完成候选的碰撞、支撑和接触面计算。"""
+    if placement.x + placement.length > problem.uld.length:
+        return None
+    if not rectangle_inside_polygon(
+        y=placement.y,
+        z=placement.z,
+        width=placement.width,
+        height=placement.height,
+        polygon=problem.uld.cross_section,
+    ):
+        return None
+
+    contacts = 0
+    if placement.x == 0:
+        contacts += 1
+    if placement.y == 0:
+        contacts += 1
+    if placement.z == 0:
+        contacts += 1
+    if placement.x + placement.length == problem.uld.length:
+        contacts += 1
+    if placement.y + placement.width == max_y:
+        contacts += 1
+    if placement.z + placement.height == max_z:
+        contacts += 1
+
+    for existing in scan_index.placements:
+        if placements_overlap(placement, existing):
+            return None
+
+    contact_indices: set[int] = set()
+    contact_indices.update(scan_index.x_ends.get(placement.x, ()))
+    contact_indices.update(scan_index.x_starts.get(placement.x + placement.length, ()))
+    contact_indices.update(scan_index.y_ends.get(placement.y, ()))
+    contact_indices.update(scan_index.y_starts.get(placement.y + placement.width, ()))
+    contact_indices.update(scan_index.z_ends.get(placement.z, ()))
+    contact_indices.update(scan_index.z_starts.get(placement.z + placement.height, ()))
+    for index in contact_indices:
+        contacts += _face_contact_count(placement, scan_index.placements[index])
+
+    if placement.z == 0:
+        return (1, 1, contacts)
+
+    support_area = 0.0
+    dominant_support_area = 0.0
+    start = bisect_left(scan_index.top_heights, placement.z - EPSILON)
+    end = bisect_right(scan_index.top_heights, placement.z + EPSILON)
+    supporter_indices: list[int] = []
+    for top_height in scan_index.top_heights[start:end]:
+        supporter_indices.extend(scan_index.z_ends[top_height])
+    for index in sorted(supporter_indices):
+        overlap_area = _support_overlap_area(placement, scan_index.placements[index])
+        support_area += overlap_area
+        dominant_support_area = max(dominant_support_area, overlap_area)
+
+    bottom_area = placement.length * placement.width
+    support_ratio = support_area / bottom_area if bottom_area else 0
+    if support_ratio < _min_support_ratio_for_mode(problem.search_mode):
+        return None
+    dominant_support_ratio = dominant_support_area / bottom_area if bottom_area else 0
+    return (support_ratio, dominant_support_ratio, contacts)
+
+
+def _placement_scan_index(placements: list[BoxPlacement]) -> PlacementScanIndex:
+    x_starts: defaultdict[float, list[int]] = defaultdict(list)
+    x_ends: defaultdict[float, list[int]] = defaultdict(list)
+    y_starts: defaultdict[float, list[int]] = defaultdict(list)
+    y_ends: defaultdict[float, list[int]] = defaultdict(list)
+    z_starts: defaultdict[float, list[int]] = defaultdict(list)
+    z_ends: defaultdict[float, list[int]] = defaultdict(list)
+    for index, placement in enumerate(placements):
+        x_starts[placement.x].append(index)
+        x_ends[placement.x + placement.length].append(index)
+        y_starts[placement.y].append(index)
+        y_ends[placement.y + placement.width].append(index)
+        z_starts[placement.z].append(index)
+        z_ends[placement.z + placement.height].append(index)
+    return PlacementScanIndex(
+        placements=placements,
+        x_starts={coordinate: tuple(indices) for coordinate, indices in x_starts.items()},
+        x_ends={coordinate: tuple(indices) for coordinate, indices in x_ends.items()},
+        y_starts={coordinate: tuple(indices) for coordinate, indices in y_starts.items()},
+        y_ends={coordinate: tuple(indices) for coordinate, indices in y_ends.items()},
+        z_starts={coordinate: tuple(indices) for coordinate, indices in z_starts.items()},
+        z_ends={coordinate: tuple(indices) for coordinate, indices in z_ends.items()},
+        top_heights=tuple(sorted(z_ends)),
     )
 
 
