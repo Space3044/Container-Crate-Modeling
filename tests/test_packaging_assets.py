@@ -28,6 +28,7 @@ class PackagingAssetsTests(unittest.TestCase):
         self.assertNotIn("http://127.0.0.1:8000/", launcher)
         self.assertIn("run_server", launcher)
         self.assertIn('resource_path("web")', launcher)
+        self.assertIn("multiprocessing.freeze_support()", launcher)
 
     def test_launcher_builds_browser_url_from_actual_server_port(self):
         launcher = self._load_launcher()

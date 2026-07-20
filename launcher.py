@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing
 import sys
 import threading
 import webbrowser
@@ -29,4 +30,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()

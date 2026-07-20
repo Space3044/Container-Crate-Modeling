@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 import random
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -45,6 +47,7 @@ COLUMN_BUILD_MAX_SPACES = 16
 GRASP_ROUNDS_BALANCED = 2
 GRASP_ROUNDS_HIGH_UTILIZATION = 3
 GRASP_RCL_WINDOW = 3
+MAX_PARALLEL_SEARCH_PROCESSES = 3
 
 
 @dataclass(frozen=True)
@@ -299,16 +302,40 @@ def _best_of_rounds(
     problem: MultiContainerPackingInput,
     rounds: list[tuple[int, int | None]],
 ) -> MultiContainerPackingResult:
+    if not rounds:
+        return _pack_multi_profile_variant(problem, variant=0)
+    if len(rounds) == 1:
+        variant, seed = rounds[0]
+        return _pack_multi_profile_round(problem, variant, seed)
+
+    worker_count = min(MAX_PARALLEL_SEARCH_PROCESSES, len(rounds))
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        mp_context=multiprocessing.get_context("spawn"),
+    ) as executor:
+        futures = [
+            executor.submit(_pack_multi_profile_round, problem, variant, seed)
+            for variant, seed in rounds
+        ]
+
     best_result: MultiContainerPackingResult | None = None
     best_score: tuple[object, ...] | None = None
-    for variant, seed in rounds:
-        rng = random.Random(seed) if seed is not None else None
-        result = _pack_multi_profile_variant(problem, variant=variant, rng=rng)
+    for future in futures:
+        result = future.result()
         score = _multi_result_score(problem, result)
         if best_result is None or score > best_score:
             best_result = result
             best_score = score
-    return best_result if best_result is not None else _pack_multi_profile_variant(problem, variant=0)
+    return best_result
+
+
+def _pack_multi_profile_round(
+    problem: MultiContainerPackingInput,
+    variant: int,
+    seed: int | None,
+) -> MultiContainerPackingResult:
+    rng = random.Random(seed) if seed is not None else None
+    return _pack_multi_profile_variant(problem, variant=variant, rng=rng)
 
 
 def _multi_result_score(problem: MultiContainerPackingInput, result: MultiContainerPackingResult) -> tuple[float, ...]:

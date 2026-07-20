@@ -1,5 +1,7 @@
 import unittest
+from unittest.mock import MagicMock, patch
 
+import cargo_loading.profile_packer as profile_packer
 from cargo_loading.profile_models import BoxSpec, ContainerSpec, MultiContainerPackingInput, PackingInputError
 from cargo_loading.profile_packer import (
     MAX_BATCH_PLACEMENTS,
@@ -704,6 +706,105 @@ class MultiContainerPackerTests(unittest.TestCase):
 
         self.assertGreaterEqual(high_result.loaded_count, balanced_result.loaded_count)
         self.assertGreaterEqual(high_result.used_volume, variant_0_result.used_volume)
+
+    def test_balanced_parallel_rounds_match_serial_round_selection(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=20,
+                    cross_section=[(0, 0), (20, 0), (20, 20), (0, 20)],
+                    quantity=1,
+                )
+            ],
+            boxes=[BoxSpec(id="BOX", length=10, width=10, height=10, quantity=4)],
+            search_mode="balanced",
+        )
+        rounds = profile_packer._round_plan(problem)
+        serial_results = [
+            profile_packer._pack_multi_profile_round(problem, variant, seed)
+            for variant, seed in rounds
+        ]
+        expected = max(serial_results, key=lambda result: profile_packer._multi_result_score(problem, result))
+
+        actual = pack_multi_profile(problem)
+
+        self.assertEqual(len(rounds), 3)
+        self.assertEqual(actual, expected)
+
+    def test_parallel_rounds_use_at_most_three_spawn_workers(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=20,
+                    cross_section=[(0, 0), (20, 0), (20, 20), (0, 20)],
+                    quantity=1,
+                )
+            ],
+            boxes=[BoxSpec(id="BOX", length=10, width=10, height=10, quantity=1)],
+            search_mode="high_utilization",
+        )
+        rounds = profile_packer._round_plan(problem)
+        round_result = _pack_multi_profile_variant(problem, 0)
+        futures = [MagicMock() for _ in rounds]
+        for future in futures:
+            future.result.return_value = round_result
+
+        with patch.object(profile_packer, "ProcessPoolExecutor") as executor_class:
+            executor = executor_class.return_value.__enter__.return_value
+            executor.submit.side_effect = futures
+
+            result = profile_packer._best_of_rounds(problem, rounds)
+
+        self.assertEqual(result, round_result)
+        self.assertGreater(len(rounds), profile_packer.MAX_PARALLEL_SEARCH_PROCESSES)
+        self.assertEqual(executor_class.call_args.kwargs["max_workers"], 3)
+        self.assertEqual(executor_class.call_args.kwargs["mp_context"].get_start_method(), "spawn")
+        self.assertEqual(executor.submit.call_count, len(rounds))
+
+    def test_fast_mode_does_not_start_process_pool(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=20,
+                    cross_section=[(0, 0), (20, 0), (20, 20), (0, 20)],
+                    quantity=1,
+                )
+            ],
+            boxes=[BoxSpec(id="BOX", length=10, width=10, height=10, quantity=1)],
+            search_mode="fast",
+        )
+
+        with patch.object(profile_packer, "ProcessPoolExecutor") as executor_class:
+            result = pack_multi_profile(problem)
+
+        executor_class.assert_not_called()
+        self.assertEqual(result.loaded_count, 1)
+
+    def test_parallel_round_failure_is_not_silently_ignored(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=20,
+                    cross_section=[(0, 0), (20, 0), (20, 20), (0, 20)],
+                    quantity=1,
+                )
+            ],
+            boxes=[BoxSpec(id="BOX", length=10, width=10, height=10, quantity=1)],
+            search_mode="balanced",
+        )
+        failed_future = MagicMock()
+        failed_future.result.side_effect = RuntimeError("worker failed")
+
+        with patch.object(profile_packer, "ProcessPoolExecutor") as executor_class:
+            executor = executor_class.return_value.__enter__.return_value
+            executor.submit.return_value = failed_future
+
+            with self.assertRaisesRegex(RuntimeError, "worker failed"):
+                profile_packer._best_of_rounds(problem, profile_packer._round_plan(problem))
 
     def test_layer_building_reaches_hand_verified_pga_optimum(self):
         # 现场反例：PGA 五边形截面 + 27 个可旋转 BOX-A。手算最优是
