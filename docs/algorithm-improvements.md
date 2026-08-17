@@ -740,6 +740,58 @@ test_packing_input_from_dict_merges_box_rows_before_building_problem
 test_pack_multi_profile_merges_equivalent_rows_before_calculation
 ```
 
+## 第十九版：Beam 外廓多样性配额
+
+动机：现场反例是单个 Q7（`306` 长，截面 `[[0,0],[240,0],[240,240],[120,291],[0,291]]`）装
+12 箱（A 109×109×95 ×4、B 106×69×99 ×3、C 120×100×145 ×2、D 112×112×123、
+E 110×110×146、F 124×100×154）。人工方案可以全部装入，三种搜索模式却都只装 11 箱。
+
+逐步追踪确认候选生成没有问题：人工方案的 12 个位置全部出现在
+`_placement_candidates` 的输出里，每步 rank 都是 0 或 1，远在 `placement_branches` 之内。
+问题出在 beam 截断本身：
+
+```text
+单 ULD 路径每步放的是同一个箱子实例，各状态 used_volume / loaded_count 恒等，
+_state_score 退化成只比 -bounding_volume
+该用例的可行解要求高箱沿长度方向铺满 306，外廓 max_x=300 明显大于紧凑布局的 222~244
+放第一个 A 开辟第二条 y 带时，目标路径在 81 个状态里排名第 80，被 beam_width=30 淘汰
+beam 里 30 个名额只覆盖 29 种外廓中的 13 种，全是同一种紧凑形态的微小变体
+多容器路径另有一层：分支可单放也可批量放，-unloaded_count 让批量分支凭放置数量
+整批压过浅层分支，目标在深度 3 层内排名第 2，全局却排到第 223
+```
+
+做法是在 `_select_diverse_states` 里给 beam 增加多样性配额：
+
+```text
+先按原有分数取保底名额，行为与原实现一致
+剩余名额按外廓 _bounding_extents 分组轮流补位，保证结构不同的布局都留下代表
+多容器路径再按各容器放置数量分层，层内先按外廓交错，避免批量分支整批挤掉浅层分支
+单 ULD 路径分数无区分度，保底名额留 1/3（PROFILE_BEAM_TOP_SCORE_QUOTA_DIVISOR）
+多容器路径分数有真实区分度，多样性只占 1/3 补充名额（BEAM_DIVERSITY_QUOTA_DIVISOR）
+合法性规则、候选生成、复合分支和搜索轮数均不变
+```
+
+配额比例是关键：多容器路径若让多样性占主导，第十五版的 Q5 高度带用例会从 67 箱回退到 66 箱。
+
+对应测试：
+
+```text
+test_beam_diversity_keeps_spread_layout_in_sloped_q7（多容器路径）
+test_beam_diversity_keeps_spread_layout_in_sloped_q7（单 ULD 路径）
+```
+
+效果：
+
+```text
+Q7 现场用例：单 ULD 与多容器两条路径、三种搜索模式均从 11 箱提升到 12 箱
+装载率 0.6595 / 0.6977 提升到 0.7529，全量合法性校验通过
+既有用例无回退：Q5 高度带仍 67 箱，97 个回归测试全部通过
+20 ULD / 25 箱型 / 1000 箱（小箱全装场景）：仍装入 1000 箱，
+  fast 本机 3.26 秒降至 2.01 秒，balanced 3.41 秒增至 3.83 秒
+容器不足的大箱场景（同规模）：fast 161→159 箱、balanced 176→174 箱，
+  活跃容器利用率 0.6717→0.6835，balanced 本机 30.33 秒增至 37.12 秒
+```
+
 ## 当前算法总结
 
 当前完整策略可以概括为：
@@ -765,6 +817,7 @@ test_pack_multi_profile_merges_equivalent_rows_before_calculation
 + 高装载率模式下放宽底面支撑率到 0.7，允许更紧密堆叠
 + 人工指定 ULD 类型硬约束：指定箱型只允许进入 required_container_types 中的 ULD 类型，并优先容纳
 + Beam 体积进展多样性：复合分支推进多个小箱时，保留大体积箱子的长期可行路径
++ Beam 外廓多样性配额：装载量相同时按外廓分组轮流补位，多容器路径再按放置数量分层
 ```
 
 它比初版贪心更稳定，但由于 Beam Search 只保留有限数量的状态，仍然不是数学严格最优。

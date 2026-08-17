@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 import multiprocessing
 import random
 from collections import Counter, defaultdict
+from typing import Callable, TypeVar
 
 from cargo_loading.profile_geometry import convex_y_interval, polygon_area, rectangle_inside_polygon
 from cargo_loading.profile_models import (
@@ -29,6 +30,7 @@ from cargo_loading.profile_models import (
 
 Point3D = tuple[float, float, float]
 PlacementScore = tuple[float, float, float, float, float, float, int, float, float, float]
+StateT = TypeVar("StateT")
 EPSILON = 1e-9
 DEFAULT_BEAM_WIDTH = 30
 MAX_PLACEMENT_BRANCHES = 20
@@ -49,6 +51,8 @@ GRASP_ROUNDS_BALANCED = 2
 GRASP_ROUNDS_HIGH_UTILIZATION = 3
 GRASP_RCL_WINDOW = 3
 MAX_PARALLEL_SEARCH_PROCESSES = 3
+BEAM_DIVERSITY_QUOTA_DIVISOR = 3
+PROFILE_BEAM_TOP_SCORE_QUOTA_DIVISOR = 3
 
 
 @dataclass(frozen=True)
@@ -242,11 +246,86 @@ def _select_beam_states(
     unique_states = {}
     for state in states:
         unique_states[_state_signature(state)] = state
-    return sorted(
+    ranked = sorted(
         unique_states.values(),
         key=lambda state: _state_score(problem, state),
         reverse=True,
-    )[:beam_width]
+    )
+    # 单 ULD 每步放的是同一个箱子实例，各状态装载量恒等，分数只剩包围盒体积可比，
+    # 分数保底名额只留 1/3，其余交给结构多样性。
+    top_quota = max(1, beam_width // PROFILE_BEAM_TOP_SCORE_QUOTA_DIVISOR)
+    return _select_diverse_states(
+        ranked,
+        beam_width,
+        _state_shape_key,
+        diversity_quota=beam_width - top_quota,
+    )
+
+
+def _state_shape_key(state: PackingState) -> tuple[object, ...]:
+    return _bounding_extents(state.placements)
+
+
+def _select_diverse_states(
+    ranked: list[StateT],
+    beam_width: int,
+    shape_key: Callable[[StateT], tuple[object, ...]],
+    layer_key: Callable[[StateT], object] | None = None,
+    diversity_quota: int | None = None,
+) -> list[StateT]:
+    """先按分数保底，再按外廓结构轮流补位，必要时先按 layer_key 分层。
+
+    同一步展开的状态布局各异但装载量往往相同，纯按分数截断会让 beam 坍缩成一种形态：
+    紧凑布局挤掉沿长度方向铺开的布局。轮流补位保证外廓不同的分支都留下代表。
+    分支能单放也能批量放时（多容器路径），再按深度分层，避免批量分支凭放置数量整批挤掉浅层分支。
+    """
+    if len(ranked) <= beam_width:
+        return ranked
+    if diversity_quota is None:
+        diversity_quota = max(1, beam_width // BEAM_DIVERSITY_QUOTA_DIVISOR)
+    top_quota = max(1, beam_width - diversity_quota)
+    selected = ranked[:top_quota]
+    seen = {id(state) for state in selected}
+
+    layers: dict[object, dict[tuple[object, ...], list[StateT]]] = {}
+    for state in ranked:
+        shapes = layers.setdefault(layer_key(state) if layer_key else None, {})
+        shapes.setdefault(shape_key(state), []).append(state)
+    layer_queues = [_interleave_groups(shapes) for shapes in layers.values()]
+
+    index = 0
+    while len(selected) < beam_width:
+        progressed = False
+        for queue in layer_queues:
+            if index >= len(queue):
+                continue
+            progressed = True
+            state = queue[index]
+            if id(state) in seen:
+                continue
+            selected.append(state)
+            seen.add(id(state))
+            if len(selected) >= beam_width:
+                break
+        if not progressed:
+            break
+        index += 1
+    return selected
+
+
+def _interleave_groups(groups: dict[tuple[object, ...], list[StateT]]) -> list[StateT]:
+    """把分组按轮次交错展平，让每组的最优状态都排到队列前段。"""
+    queue: list[StateT] = []
+    index = 0
+    while True:
+        progressed = False
+        for group in groups.values():
+            if index < len(group):
+                queue.append(group[index])
+                progressed = True
+        if not progressed:
+            return queue
+        index += 1
 
 
 def _state_score(problem: ProfilePackingInput, state: PackingState) -> tuple[float, int, float, float, float, float, float]:
@@ -1748,11 +1827,21 @@ def _select_global_beam_states(
     unique_states = {}
     for state in states:
         unique_states[_global_state_signature(state)] = state
-    return sorted(
+    ranked = sorted(
         unique_states.values(),
         key=lambda state: _global_state_score(problem, state),
         reverse=True,
-    )[:beam_width]
+    )
+    return _select_diverse_states(ranked, beam_width, _global_state_shape_key, _global_state_layer_key)
+
+
+def _global_state_layer_key(state: GlobalPackingState) -> object:
+    # 分支可以单放也可以批量放，同一步的状态深度不一致，按深度分层再轮流补位
+    return tuple(len(container.placements) for container in state.containers)
+
+
+def _global_state_shape_key(state: GlobalPackingState) -> tuple[object, ...]:
+    return tuple(_bounding_extents(container.placements) for container in state.containers)
 
 
 def _supplemental_volume_progress_state(

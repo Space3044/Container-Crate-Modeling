@@ -220,6 +220,31 @@ class ProfilePackerTests(unittest.TestCase):
                 if first is not second:
                     self.assertFalse(profile_packer._space_contains_space(first, second))
 
+    def test_beam_diversity_keeps_spread_layout_in_sloped_q7(self):
+        # 与多容器路径同一现场反例：装载量相同时 beam 只比包围盒体积，
+        # 沿长度方向铺开的布局被整批淘汰，单 ULD 路径同样只能装 11 箱。
+        problem = ProfilePackingInput(
+            uld=ULDProfile(
+                id="Q7",
+                length=306,
+                cross_section=[(0, 0), (240, 0), (240, 240), (120, 291), (0, 291)],
+            ),
+            boxes=[
+                BoxSpec(id="BOX-A", length=109, width=109, height=95, quantity=4),
+                BoxSpec(id="BOX-B", length=106, width=69, height=99, quantity=3),
+                BoxSpec(id="BOX-C", length=120, width=100, height=145, quantity=2),
+                BoxSpec(id="BOX-D", length=112, width=112, height=123, quantity=1),
+                BoxSpec(id="BOX-E", length=110, width=110, height=146, quantity=1),
+                BoxSpec(id="BOX-F", length=124, width=100, height=154, quantity=1),
+            ],
+        )
+
+        result = pack_profile(problem)
+
+        self.assertEqual(result.loaded_count, 12)
+        self.assertEqual(result.unloaded_count, 0)
+        self.assertTrue(result.validation_passed)
+
 
 if __name__ == "__main__":
     unittest.main()

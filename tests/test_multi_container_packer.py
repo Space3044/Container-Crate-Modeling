@@ -1037,6 +1037,31 @@ class MultiContainerPackerTests(unittest.TestCase):
         self.assertTrue(automatic_result.validation_passed)
         self.assertTrue(constrained_result.validation_passed)
 
+    def test_beam_diversity_keeps_spread_layout_in_sloped_q7(self):
+        # 现场反例：单个 Q7（斜边截面）装 12 箱，人工可行方案要求高箱沿长度方向
+        # 铺满 306，矮箱双层退到斜边下的矮带。原 beam 在装载量相同时只比包围盒
+        # 体积，把铺开布局整批淘汰，三种模式都只能装 11 箱。
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(id="Q7", length=306, cross_section=[(0, 0), (240, 0), (240, 240), (120, 291), (0, 291)], quantity=1),
+            ],
+            boxes=[
+                BoxSpec(id="BOX-A", length=109, width=109, height=95, quantity=4),
+                BoxSpec(id="BOX-B", length=106, width=69, height=99, quantity=3),
+                BoxSpec(id="BOX-C", length=120, width=100, height=145, quantity=2),
+                BoxSpec(id="BOX-D", length=112, width=112, height=123, quantity=1),
+                BoxSpec(id="BOX-E", length=110, width=110, height=146, quantity=1),
+                BoxSpec(id="BOX-F", length=124, width=100, height=154, quantity=1),
+            ],
+            search_mode="balanced",
+        )
+
+        result = pack_multi_profile(problem)
+
+        self.assertEqual(result.loaded_count, 12)
+        self.assertEqual(result.unloaded_count, 0)
+        self.assertTrue(result.validation_passed)
+
 
 if __name__ == "__main__":
     unittest.main()
