@@ -715,6 +715,31 @@ Q7 现场用例：未指定 / 指定 Q7 均从 11 箱提升到 12 箱，且全�
 85 个回归测试全部通过
 ```
 
+## 第十八版：计算前归并相同箱型
+
+动机：同一物理箱型如果拆成多行录入，原有搜索会把每行当作独立箱型，导致箱型排序、批量铺层阈值和搜索分支发生变化。相同的货物数量不应因为录入行拆分而改变计算结果。
+
+做法：
+
+```text
+按长、宽、高、长宽互换设置和指定 ULD 类型分组
+长宽可互换时，长宽顺序归一后参与分组
+数量相加，保留每组第一行的 ID 和其它字段
+输入解析层与 pack_profile / pack_multi_profile 入口都归并，覆盖所有求解调用路径
+Web 在计算前显示可归并提示，并将箱子表更新为实际参与计算的箱型行
+发生多行归并时，beam 额外保留剩余体积更小的中间路径，避免合并大箱型后丢失可行解
+```
+
+不同 ULD 限制、不同长宽互换设置或不同高度的记录不会合并。合并后的装载清单、坐标实例和未装箱清单统一使用每组第一行 ID。
+
+对应测试：
+
+```text
+test_merge_box_specs_preserves_first_id_and_sums_rotatable_rows
+test_packing_input_from_dict_merges_box_rows_before_building_problem
+test_pack_multi_profile_merges_equivalent_rows_before_calculation
+```
+
 ## 当前算法总结
 
 当前完整策略可以概括为：

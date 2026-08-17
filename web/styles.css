@@ -463,7 +463,7 @@ select:focus-visible {
 }
 
 .uld-panel > .section-card { grid-template-rows: auto 1fr; }
-.boxes-panel > .section-card { grid-template-rows: auto auto 1fr auto; }
+.boxes-panel > .section-card { grid-template-rows: auto auto 1fr auto auto; }
 
 .uld-panel .table-scroll,
 .boxes-panel .table-scroll {
@@ -1063,6 +1063,47 @@ tbody tr:last-child td {
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 16px;
   font-variant-numeric: tabular-nums;
+}
+
+.box-merge-notice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid rgba(14, 165, 233, 0.28);
+  color: var(--muted-strong);
+  background:
+    linear-gradient(135deg, rgba(56, 189, 248, 0.12), transparent 72%),
+    var(--block-quiet);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.box-merge-notice[data-state="merged"] {
+  border-color: rgba(14, 165, 233, 0.52);
+  background:
+    linear-gradient(135deg, rgba(14, 165, 233, 0.18), transparent 72%),
+    var(--block-quiet);
+}
+
+.box-merge-notice-mark {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(14, 165, 233, 0.36);
+  color: var(--accent-strong);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.box-merge-notice strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-strong);
+  font-size: 12px;
 }
 
 .box-table input[type="checkbox"] {

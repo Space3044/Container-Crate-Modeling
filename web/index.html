@@ -69,7 +69,7 @@
         <div class="panel-title">
           <span class="panel-kicker">Boxes</span>
           <h2 id="boxes-title">箱子</h2>
-          <p>添加或批量粘贴箱型，计算后查看装箱方案。</p>
+          <p>添加或批量粘贴箱型；计算前会自动归并相同箱型，并保留每组第一行 ID。</p>
         </div>
         <div class="section-card">
           <div class="section-heading">
@@ -113,6 +113,7 @@
               <tbody id="boxTableBody"></tbody>
             </table>
           </div>
+          <div id="boxMergeNotice" class="box-merge-notice" role="status" aria-live="polite"></div>
           <p id="errorMessage" class="error-message" role="alert"></p>
         </div>
       </section>

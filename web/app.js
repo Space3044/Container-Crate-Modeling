@@ -139,6 +139,7 @@ const state = {
   selectedHistoryId: null,
   hoveredInstanceId: null,
   focusedBoxId: null,
+  boxMergeSummary: null,
   historyRecords: [],
   sliceX: 0,
   camera: {
@@ -196,6 +197,7 @@ function cacheElements() {
   elements.bulkBoxInput = document.getElementById("bulkBoxInput");
   elements.importBoxesButton = document.getElementById("importBoxesButton");
   elements.boxTotalCount = document.getElementById("boxTotalCount");
+  elements.boxMergeNotice = document.getElementById("boxMergeNotice");
   elements.searchModeSelect = document.getElementById("searchModeSelect");
   elements.themeToggleButton = document.getElementById("themeToggleButton");
   elements.calculateButton = document.getElementById("calculateButton");
@@ -232,7 +234,10 @@ function cacheElements() {
 
 function bindEvents() {
   elements.addContainerButton.addEventListener("click", () => addContainerRow());
-  elements.addBoxButton.addEventListener("click", () => addBoxRow());
+  elements.addBoxButton.addEventListener("click", () => {
+    addBoxRow();
+    markBoxInputChanged();
+  });
   elements.clearBoxesButton.addEventListener("click", () => clearBoxRows());
   if (elements.importBoxesButton) {
     elements.importBoxesButton.addEventListener("click", importBulkBoxes);
@@ -244,6 +249,8 @@ function bindEvents() {
     elements.exportHtmlButton.addEventListener("click", exportHtmlReport);
   }
   elements.calculateButton.addEventListener("click", () => calculatePacking());
+  elements.boxTableBody.addEventListener("input", markBoxInputChanged);
+  elements.boxTableBody.addEventListener("change", markBoxInputChanged);
   elements.themeToggleButton.addEventListener("click", toggleTheme);
   elements.containerSelector.addEventListener("change", () => selectContainer(elements.containerSelector.value));
   elements.loadSampleButton.addEventListener("click", async () => {
@@ -345,14 +352,16 @@ async function loadSample() {
   clearError();
 }
 
-function writeInputToForm(input) {
+function writeInputToForm(input, { mergeSummary = null } = {}) {
   const normalized = normalizeInput(input);
+  state.boxMergeSummary = mergeSummary;
   elements.containerTableBody.innerHTML = "";
   normalized.containers.forEach((container) => addContainerRow(container));
   elements.boxTableBody.innerHTML = "";
   normalized.boxes.forEach((box) => addBoxRow(box));
   updateBoxTotalCount();
   elements.searchModeSelect.value = normalized.search_mode;
+  updateBoxMergeNotice();
 }
 
 async function readJsonResponse(response) {
@@ -434,10 +443,9 @@ function addBoxRow(box = {}) {
     <td><input class="box-required-container-types" type="text" value="${escapeAttribute(requiredContainerTypes)}" aria-label="指定 ULD 类型" /></td>
     <td><button class="icon-button" type="button" aria-label="删除箱子">×</button></td>
   `;
-  row.querySelector(".box-quantity").addEventListener("input", updateBoxTotalCount);
   row.querySelector("button").addEventListener("click", () => {
     row.remove();
-    updateBoxTotalCount();
+    markBoxInputChanged();
   });
   elements.boxTableBody.appendChild(row);
   updateBoxTotalCount();
@@ -452,6 +460,7 @@ function importBulkBoxes() {
     const boxes = parseBulkBoxLines(elements.bulkBoxInput.value);
     boxes.forEach((box) => addBoxRow(box));
     elements.bulkBoxInput.value = "";
+    markBoxInputChanged();
   } catch (error) {
     showError(error.message);
   }
@@ -459,7 +468,7 @@ function importBulkBoxes() {
 
 function clearBoxRows(tableBody = elements.boxTableBody) {
   tableBody.innerHTML = "";
-  updateBoxTotalCount();
+  markBoxInputChanged();
   if (elements.errorMessage) {
     clearError();
   }
@@ -474,6 +483,83 @@ function updateBoxTotalCount() {
     return sum + (Number.isInteger(quantity) && quantity > 0 ? quantity : 0);
   }, 0);
   elements.boxTotalCount.textContent = String(total);
+}
+
+function markBoxInputChanged() {
+  state.boxMergeSummary = null;
+  updateBoxTotalCount();
+  updateBoxMergeNotice();
+}
+
+function mergeBoxesForPacking(boxes) {
+  const merged = [];
+  const indexesByKey = new Map();
+  boxes.forEach((box) => {
+    const key = boxMergeKey(box);
+    const existingIndex = indexesByKey.get(key);
+    if (existingIndex === undefined) {
+      const first = { ...box };
+      if (Array.isArray(first.required_container_types)) {
+        first.required_container_types = [...first.required_container_types];
+      }
+      indexesByKey.set(key, merged.length);
+      merged.push(first);
+      return;
+    }
+    merged[existingIndex].quantity += box.quantity;
+  });
+  return {
+    boxes: merged,
+    sourceRowCount: boxes.length,
+    mergedRowCount: boxes.length - merged.length,
+    mergedTypeCount: merged.length,
+  };
+}
+
+function boxMergeKey(box) {
+  const rotatable = box.rotatable !== false;
+  const length = Number(box.length);
+  const width = Number(box.width);
+  const footprint = rotatable
+    ? [Math.min(length, width), Math.max(length, width)]
+    : [length, width];
+  const requiredContainerTypes = [...new Set((box.required_container_types ?? []).map(String))].sort();
+  return JSON.stringify([...footprint, Number(box.height), rotatable, requiredContainerTypes]);
+}
+
+function updateBoxMergeNotice() {
+  if (!elements.boxMergeNotice) {
+    return;
+  }
+  let summary = state.boxMergeSummary;
+  let applied = Boolean(summary);
+  if (!summary) {
+    try {
+      summary = mergeBoxesForPacking(readBoxesFromForm());
+    } catch {
+      summary = null;
+    }
+  }
+
+  let heading = "计算前归并";
+  let message = "相同尺寸、长宽互换设置和 ULD 类型限制的箱子会在计算前合并，数量相加，并保留第一行 ID。";
+  let stateValue = "ready";
+  if (summary) {
+    if (summary.mergedRowCount > 0) {
+      stateValue = "merged";
+      heading = applied ? "本次计算已归并" : "检测到可归并箱型";
+      message = applied
+        ? `已将 ${summary.sourceRowCount} 行归并为 ${summary.mergedTypeCount} 个计算箱型，数量已相加，保留每组第一行 ID。`
+        : `当前 ${summary.sourceRowCount} 行中有 ${summary.mergedRowCount} 行可归并，计算时会按 ${summary.mergedTypeCount} 个箱型处理。`;
+    } else {
+      message = `当前 ${summary.sourceRowCount} 行均为独立计算箱型；若存在相同箱型，计算时会自动合并。`;
+    }
+  }
+  elements.boxMergeNotice.dataset.state = stateValue;
+  elements.boxMergeNotice.innerHTML = `
+    <span class="box-merge-notice-mark" aria-hidden="true">∑</span>
+    <div><strong>${heading}</strong><span>${message}</span></div>
+  `;
 }
 
 function parseBulkBoxLines(rawValue) {
@@ -2911,6 +2997,14 @@ async function calculatePacking(options = {}) {
     setBusy(true);
     clearError();
     const input = readInputFromForm();
+    const mergeSummary = mergeBoxesForPacking(input.boxes);
+    input.boxes = mergeSummary.boxes;
+    if (mergeSummary.mergedRowCount > 0) {
+      writeInputToForm(input, { mergeSummary });
+    } else {
+      state.boxMergeSummary = null;
+      updateBoxMergeNotice();
+    }
     const requestStartedAt = Date.now();
     const response = await fetch("/api/pack", {
       method: "POST",

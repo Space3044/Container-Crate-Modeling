@@ -25,6 +25,36 @@ from cargo_loading.profile_packer import (
 
 
 class MultiContainerPackerTests(unittest.TestCase):
+    def test_pack_multi_profile_merges_equivalent_rows_before_calculation(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="ULD-A",
+                    length=40,
+                    cross_section=[(0, 0), (10, 0), (10, 10), (0, 10)],
+                    quantity=1,
+                )
+            ],
+            boxes=[
+                BoxSpec(id="BOX-A", length=10, width=10, height=10, quantity=2, rotatable=False),
+                BoxSpec(id="BOX-B", length=10, width=10, height=10, quantity=2, rotatable=False),
+            ],
+            search_mode="fast",
+        )
+
+        result = pack_multi_profile(problem)
+
+        self.assertEqual(result.loaded_count, 4)
+        self.assertEqual(result.unloaded_count, 0)
+        self.assertEqual([(item.box_id, item.quantity) for item in result.loaded], [("BOX-A", 4)])
+        self.assertTrue(
+            all(
+                placement.box_id == "BOX-A"
+                for container in result.containers
+                for placement in container.result.placements
+            )
+        )
+
     def test_pack_multi_profile_obeys_required_container_types(self):
         problem = MultiContainerPackingInput(
             containers=[

@@ -3,10 +3,64 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cargo_loading.profile_solver import solve_profile_file
+from cargo_loading.profile_models import BoxSpec
+from cargo_loading.profile_solver import merge_box_specs, packing_input_from_dict, solve_profile_file
 
 
 class ProfileSolverTests(unittest.TestCase):
+    def test_merge_box_specs_preserves_first_id_and_sums_rotatable_rows(self):
+        merged = merge_box_specs(
+            [
+                BoxSpec(
+                    id="BOX-A",
+                    length=100,
+                    width=80,
+                    height=50,
+                    quantity=2,
+                    rotatable=True,
+                    required_container_types=("Q7", "PGA"),
+                ),
+                BoxSpec(
+                    id="BOX-B",
+                    length=80,
+                    width=100,
+                    height=50,
+                    quantity=3,
+                    rotatable=True,
+                    required_container_types=("PGA", "Q7"),
+                ),
+                BoxSpec(
+                    id="BOX-C",
+                    length=80,
+                    width=100,
+                    height=50,
+                    quantity=1,
+                    rotatable=False,
+                    required_container_types=("Q7", "PGA"),
+                ),
+            ]
+        )
+
+        self.assertEqual([(box.id, box.quantity) for box in merged], [("BOX-A", 5), ("BOX-C", 1)])
+        self.assertEqual((merged[0].length, merged[0].width), (100, 80))
+
+    def test_packing_input_from_dict_merges_box_rows_before_building_problem(self):
+        problem = packing_input_from_dict(
+            {
+                "uld": {
+                    "id": "ULD-001",
+                    "length": 120,
+                    "cross_section": [[0, 0], [100, 0], [100, 60], [70, 90], [0, 90]],
+                },
+                "boxes": [
+                    {"id": "BOX-A", "length": 60, "width": 50, "height": 30, "quantity": 2},
+                    {"id": "BOX-B", "length": 60, "width": 50, "height": 30, "quantity": 3},
+                ],
+            }
+        )
+
+        self.assertEqual([(box.id, box.quantity) for box in problem.boxes], [("BOX-A", 5)])
+
     def test_solve_profile_file_writes_packing_result(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

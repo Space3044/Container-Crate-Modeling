@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass, replace
 import multiprocessing
 import random
 from collections import Counter, defaultdict
-from dataclasses import dataclass
 
 from cargo_loading.profile_geometry import convex_y_interval, polygon_area, rectangle_inside_polygon
 from cargo_loading.profile_models import (
@@ -23,6 +23,7 @@ from cargo_loading.profile_models import (
     SEARCH_MODE_HIGH_UTILIZATION,
     ULDProfile,
     UnloadedBox,
+    merge_box_specs,
 )
 
 
@@ -131,6 +132,7 @@ def pack_packing(problem: ProfilePackingInput | MultiContainerPackingInput) -> P
 
 
 def pack_profile(problem: ProfilePackingInput) -> ProfilePackingResult:
+    problem = _normalize_problem_boxes(problem)
     best_result: ProfilePackingResult | None = None
     for expanded_boxes in _expanded_box_orders(problem.boxes):
         result = _pack_profile_ordered(problem, expanded_boxes)
@@ -279,7 +281,15 @@ MULTISTART_VARIANTS = (0, 1, 2, 3, 4)
 
 
 def pack_multi_profile(problem: MultiContainerPackingInput) -> MultiContainerPackingResult:
+    problem = _normalize_problem_boxes(problem)
     return _best_of_rounds(problem, _round_plan(problem))
+
+
+def _normalize_problem_boxes(
+    problem: ProfilePackingInput | MultiContainerPackingInput,
+) -> ProfilePackingInput | MultiContainerPackingInput:
+    """确保直接调用求解器时也遵守计算前箱型归并规则。"""
+    return replace(problem, boxes=merge_box_specs(problem.boxes))
 
 
 def _round_plan(problem: MultiContainerPackingInput) -> list[tuple[int, int | None]]:
@@ -1781,6 +1791,8 @@ def _global_state_score(problem: MultiContainerPackingInput, state: GlobalPackin
     used_volume = sum(container.used_volume for container in state.containers)
     loaded_count = sum(len(container.placements) for container in state.containers)
     unloaded_count = sum(quantity for quantity in state.remaining_counter.values() if quantity > 0)
+    remaining_volume = sum(state.remaining_counter[box.id] * box.volume for box in problem.boxes)
+    has_merged_box_rows = any(box._merge_source_count > 1 for box in problem.boxes)
     required_unloaded_count = _required_unloaded_count_from_state(problem, state)
     compactness = sum(_container_bounding_volume(container) for container in state.containers)
     used_container_count = _used_container_count(state.containers)
@@ -1791,13 +1803,14 @@ def _global_state_score(problem: MultiContainerPackingInput, state: GlobalPackin
             -unloaded_count,
             -used_container_count,
             loaded_count,
+            *((-remaining_volume,) if has_merged_box_rows else ()),
             used_volume,
             active_container_utilization,
             -compactness,
         )
     return (
         -required_unloaded_count,
-        -unloaded_count,
+        *((-remaining_volume, -unloaded_count) if has_merged_box_rows else (-unloaded_count,)),
         -used_container_count,
         used_volume,
         loaded_count,

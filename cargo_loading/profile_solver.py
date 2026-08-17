@@ -15,6 +15,7 @@ from cargo_loading.profile_models import (
     ProfilePackingResult,
     ULDProfile,
     UnloadedBox,
+    merge_box_specs,
 )
 from cargo_loading.profile_packer import pack_packing
 from cargo_loading.profile_visualizer import render_cross_section_svg, render_x_slice_svg
@@ -64,7 +65,7 @@ def profile_input_from_dict(data: dict[str, object]) -> ProfilePackingInput:
         length=uld_data["length"],
         cross_section=[tuple(point) for point in uld_data["cross_section"]],
     )
-    boxes = [BoxSpec(**box_data) for box_data in data["boxes"]]
+    boxes = merge_box_specs([BoxSpec(**box_data) for box_data in data["boxes"]])
     return ProfilePackingInput(
         uld=uld,
         boxes=boxes,
@@ -83,7 +84,7 @@ def multi_container_input_from_dict(data: dict[str, object]) -> MultiContainerPa
         )
         for container_data in data["containers"]
     ]
-    boxes = [BoxSpec(**box_data) for box_data in data["boxes"]]
+    boxes = merge_box_specs([BoxSpec(**box_data) for box_data in data["boxes"]])
     return MultiContainerPackingInput(
         containers=containers,
         boxes=boxes,
