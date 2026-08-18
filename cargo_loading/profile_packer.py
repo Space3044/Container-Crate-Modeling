@@ -189,7 +189,7 @@ def _pack_profile_ordered(
 
 
 def _profile_result_from_state(problem: ProfilePackingInput, state: PackingState) -> ProfilePackingResult:
-    placements = state.placements
+    placements = _mark_height_swapped_placements(problem, state.placements)
     unloaded_counter = state.unloaded_counter
     unloaded = [
         UnloadedBox(box_id=box_id, quantity=quantity, reason="no feasible space")
@@ -215,6 +215,27 @@ def _profile_result_from_state(problem: ProfilePackingInput, state: PackingState
         validation_errors=validation_errors,
         loaded=loaded,
     )
+
+
+def _mark_height_swapped_placements(
+    problem: ProfilePackingInput,
+    placements: list[BoxPlacement],
+) -> list[BoxPlacement]:
+    """标出装入高度与录入高度不同的箱子，供下游单独提示需要立放或倒放。
+
+    只有 full_rotatable 的箱型能改变高度方向，其余箱型此标记恒为 False。
+    """
+    box_by_id = {box.id: box for box in problem.boxes}
+    marked: list[BoxPlacement] = []
+    for placement in placements:
+        box = box_by_id.get(placement.box_id)
+        swapped = (
+            box is not None
+            and box.full_rotatable
+            and abs(placement.height - box.height) > EPSILON
+        )
+        marked.append(replace(placement, height_swapped=True) if swapped else placement)
+    return marked
 
 
 def _result_score(result: ProfilePackingResult, objective: str) -> tuple[float, int, float]:

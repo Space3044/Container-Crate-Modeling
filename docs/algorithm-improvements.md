@@ -840,6 +840,39 @@ test_packing_input_from_dict_reads_full_rotatable_flag
 朝向数量从最多 2 种增至最多 6 种，勾选箱型的候选枚举量相应增加
 ```
 
+## 第二十一版：标出实际改变高度方向的放置
+
+动机：开启 `full_rotatable` 只说明箱型允许侧翻或倒置，现场还需要知道最终方案中哪些具体箱子真的改变了高度方向。
+如果只看输入勾选，无法在坐标表、可视化或导出文件中区分“允许互换”和“已经互换”。
+
+做法：
+
+```text
+BoxPlacement 增加 height_swapped，默认 false，保持旧结果对象和旧输入兼容
+生成最终单 ULD 结果时，按箱型核对放置高度；只有 full_rotatable 且高度不同才标记 true
+JSON、主页面坐标表/悬停详情、HTML 报告、XLSX 坐标表和 SVG 预览同步显示提示
+多 ULD 的每个容器结果复用同一标记逻辑，避免单 ULD 与多 ULD 展示不一致
+```
+
+对应测试：
+
+```text
+test_height_swapped_marks_only_placements_that_changed_height
+test_height_swapped_stays_false_when_full_rotatable_box_keeps_input_height
+test_pack_multi_profile_marks_height_swapped_placements
+test_placement_dict_includes_height_swapped_flag
+test_height_swapped_marker_survives_html_and_excel_exports
+test_render_svg_titles_explain_height_swapped_placements
+```
+
+效果：
+
+```text
+不改变装箱搜索、评分或合法性规则；仅为最终放置增加可追溯的方向提示
+全旋转箱子保留原始高度时不显示误报，未开启 full_rotatable 的箱型不会被标记
+坐标、悬停、选中详情和导出结果均能识别实际需要长宽高互换的箱子
+```
+
 ## 当前算法总结
 
 当前完整策略可以概括为：

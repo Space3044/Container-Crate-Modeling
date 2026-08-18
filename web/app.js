@@ -408,6 +408,37 @@ function normalizeInput(input) {
   return structuredClone(fallbackInput);
 }
 
+function normalizeResultHeightSwapFlags(result, input) {
+  if (!result || typeof result !== "object") {
+    return result;
+  }
+  const normalizedInput = input ? normalizeInput(input) : { boxes: [] };
+  const boxById = new Map((normalizedInput.boxes ?? []).map((box) => [box.id, box]));
+  const markPlacement = (placement) => {
+    const box = boxById.get(placement.box_id);
+    const inferred =
+      box?.full_rotatable === true
+      && Math.abs(Number(placement.height) - Number(box.height)) > 1e-9;
+    return {
+      ...placement,
+      height_swapped: placement.height_swapped === true || inferred,
+    };
+  };
+  if (Array.isArray(result.containers)) {
+    return {
+      ...result,
+      containers: result.containers.map((container) => ({
+        ...container,
+        placements: (container.placements ?? []).map(markPlacement),
+      })),
+    };
+  }
+  return {
+    ...result,
+    placements: (result.placements ?? []).map(markPlacement),
+  };
+}
+
 function addContainerRow(container = {}) {
   const row = document.createElement("tr");
   const id = container.id ?? nextAlphabeticId("ULD", ".container-id");
@@ -675,8 +706,9 @@ const HTML_REPORT_SVG_WIDTH = 680;
 const HTML_REPORT_SVG_HEIGHT = 320;
 
 function buildHtmlReport(result, input = null, createdAt = new Date().toISOString()) {
-  const containers = resultContainersForExport(result);
   const exportInput = input ? normalizeInput(input) : { containers: [], boxes: [] };
+  result = normalizeResultHeightSwapFlags(result, exportInput);
+  const containers = resultContainersForExport(result);
   const inputBoxById = new Map((exportInput.boxes ?? []).map((box) => [box.id, box]));
   const reportSceneData = buildHtmlReportSceneData(containers, exportInput);
   const sheets = buildWorkbookSheets(result, exportInput);
@@ -855,6 +887,7 @@ function buildHtmlReportSceneData(containers, exportInput) {
         length: Number(placement.length),
         width: Number(placement.width),
         height: Number(placement.height),
+        height_swapped: placement.height_swapped === true,
       })),
     };
   });
@@ -1190,7 +1223,8 @@ function htmlBoxLabel(item, inputBoxById) {
 }
 
 function htmlPlacementDimensions(placement) {
-  return [placement.length, placement.width, placement.height].map(formatNumber).join(" × ");
+  const dimensions = [placement.length, placement.width, placement.height].map(formatNumber).join(" × ");
+  return placement.height_swapped ? `${dimensions}（长宽高互换）` : dimensions;
 }
 
 function formatSvgNumber(value) {
@@ -1971,10 +2005,14 @@ function htmlReportScript(reportSceneData = []) {
           hideHtmlReportSceneTooltip(state);
           return;
         }
+        const swapNote = placement.height_swapped
+          ? '<div class="swap-note">⚠ 需长宽高互换后装入</div>'
+          : '';
         state.tooltip.innerHTML =
           "<strong>" + htmlReportEscape(placement.instance_id) + "</strong>" +
           "<div>类型：" + htmlReportEscape(placement.box_id) + "</div>" +
           "<div>尺寸：" + htmlReportFormatNumber(placement.length) + " × " + htmlReportFormatNumber(placement.width) + " × " + htmlReportFormatNumber(placement.height) + "</div>" +
+          swapNote +
           "<div>坐标：x " + htmlReportFormatNumber(placement.x) + "，y " + htmlReportFormatNumber(placement.y) + "，z " + htmlReportFormatNumber(placement.z) + "</div>";
         state.tooltip.classList.add("visible");
         const stageRect = state.tooltip.parentElement.getBoundingClientRect();
@@ -2002,13 +2040,17 @@ function htmlReportScript(reportSceneData = []) {
           return;
         }
         state.selection.classList.remove("muted");
+        const swapNote = placement.height_swapped
+          ? '<div class="swap-note">⚠ 需长宽高互换后装入</div>'
+          : '';
         state.selection.innerHTML =
           "<strong>" + htmlReportEscape(placement.instance_id) + "</strong>" +
           "<div>类型：<code>" + htmlReportEscape(placement.box_id) + "</code></div>" +
           "<div>x：<code>" + htmlReportFormatNumber(placement.x) + " ~ " + htmlReportFormatNumber(placement.x + placement.length) + "</code></div>" +
           "<div>y：<code>" + htmlReportFormatNumber(placement.y) + " ~ " + htmlReportFormatNumber(placement.y + placement.width) + "</code></div>" +
           "<div>z：<code>" + htmlReportFormatNumber(placement.z) + " ~ " + htmlReportFormatNumber(placement.z + placement.height) + "</code></div>" +
-          "<div>尺寸：<code>" + htmlReportFormatNumber(placement.length) + " × " + htmlReportFormatNumber(placement.width) + " × " + htmlReportFormatNumber(placement.height) + "</code></div>";
+          "<div>尺寸：<code>" + htmlReportFormatNumber(placement.length) + " × " + htmlReportFormatNumber(placement.width) + " × " + htmlReportFormatNumber(placement.height) + "</code></div>" +
+          swapNote;
       }
 
       function htmlReportPlacementByInstanceId(state, instanceId) {
@@ -2138,6 +2180,8 @@ function htmlReportStyles() {
     .scene-tooltip { position: absolute; z-index: 4; display: none; max-width: min(280px, calc(100% - 24px)); padding: 10px 12px; border: 1px solid rgba(226, 232, 240, 0.28); border-radius: 8px; color: #e2e8f0; background: rgba(15, 23, 42, 0.92); box-shadow: 0 18px 44px rgba(0, 0, 0, 0.35); pointer-events: none; line-height: 1.55; font-size: 12.5px; }
     .scene-tooltip.visible { display: block; }
     .scene-tooltip strong { display: block; margin-bottom: 4px; color: #fef08a; }
+    .swap-note { margin-top: 4px; color: #be123c; font-weight: 700; }
+    .scene-tooltip .swap-note { color: #fda4af; }
     .scene-selection { margin-top: 10px; padding: 10px 12px; border: 1px solid #dbe4ee; border-radius: 8px; background: #fff; font-size: 13px; line-height: 1.55; }
     .scene-selection strong { color: #0f172a; }
     svg { width: 100%; height: auto; display: block; }
@@ -2173,12 +2217,13 @@ function htmlReportStyles() {
 }
 
 function buildWorkbookSheets(result, input = null) {
+  const exportInput = input ? normalizeInput(input) : { containers: [], boxes: [] };
+  result = normalizeResultHeightSwapFlags(result, exportInput);
   const containers = resultContainersForExport(result);
   const placements = allPlacementsForExport(containers);
   const loaded = result.loaded ?? loadedSummaryFromPlacements(placements);
   const unloaded = result.unloaded ?? [];
   const validationErrors = result.validation_errors?.length ? result.validation_errors.join("；") : "";
-  const exportInput = input ? normalizeInput(input) : { containers: [], boxes: [] };
   const inputBoxById = new Map((exportInput.boxes ?? []).map((box) => [box.id, box]));
 
   return [
@@ -2266,7 +2311,7 @@ function buildWorkbookSheets(result, input = null) {
     {
       name: "装箱坐标",
       rows: [
-        ["ULD", "实例", "箱子 ID", "x", "y", "z", "L", "W", "H"],
+        ["ULD", "实例", "箱子 ID", "x", "y", "z", "L", "W", "H", "长宽高互换"],
         ...placements.map((placement) => [
           { value: placement.container_id, styleKey: uldStyleKey(placement.container_id) },
           placement.instance_id,
@@ -2277,9 +2322,10 @@ function buildWorkbookSheets(result, input = null) {
           placement.length,
           placement.width,
           placement.height,
+          placement.height_swapped ? "是" : "",
         ]),
       ],
-      widths: [18, 20, 18, 10, 10, 10, 10, 10, 10],
+      widths: [18, 20, 18, 10, 10, 10, 10, 10, 10, 14],
     },
   ];
 }
@@ -3023,7 +3069,7 @@ async function calculatePacking(options = {}) {
       throw new Error(data.error || "计算失败");
     }
     state.input = input;
-    state.result = data.result;
+    state.result = normalizeResultHeightSwapFlags(data.result, input);
     const serverElapsedSeconds = Number(data.elapsed_seconds);
     const elapsedSeconds = Number.isFinite(serverElapsedSeconds)
       ? serverElapsedSeconds
@@ -3155,7 +3201,7 @@ function selectHistoryRecord(recordId) {
   stopPackingAnimation();
   state.selectedHistoryId = record.id;
   state.input = normalizeInput(structuredClone(record.input));
-  state.result = structuredClone(record.result);
+  state.result = normalizeResultHeightSwapFlags(structuredClone(record.result), state.input);
   state.selectedContainerId = null;
   state.selectedInstanceId = null;
   state.hoveredInstanceId = null;
@@ -3439,7 +3485,7 @@ function renderActiveContainerDetails() {
     .map(
       (placement) => `
       <tr data-instance-id="${escapeAttribute(placement.instance_id)}" class="${placement.instance_id === state.selectedInstanceId ? "selected-row" : ""}">
-        <td>${escapeHtml(placement.instance_id)}</td>
+        <td>${escapeHtml(placement.instance_id)}${placement.height_swapped ? ' <span class="swap-badge" title="该箱子需长宽高互换后装入">翻</span>' : ""}</td>
         <td>${formatNumber(placement.x)}</td>
         <td>${formatNumber(placement.y)}</td>
         <td>${formatNumber(placement.z)}</td>
@@ -4393,6 +4439,12 @@ function renderSelectedBoxDetails() {
     return;
   }
   elements.selectedBoxDetails.classList.remove("muted-text");
+  const inputBox = (state.input?.boxes ?? []).find((box) => box.id === placement.box_id);
+  const swapNote = placement.height_swapped
+    ? `<div class="swap-note">⚠ 需长宽高互换后装入${
+        inputBox ? `（录入 <code>${formatNumber(inputBox.length)} × ${formatNumber(inputBox.width)} × ${formatNumber(inputBox.height)}</code>）` : ""
+      }</div>`
+    : "";
   elements.selectedBoxDetails.innerHTML = `
     <strong>${escapeHtml(placement.instance_id)}</strong>
     <div>类型：<code>${escapeHtml(placement.box_id)}</code></div>
@@ -4401,6 +4453,7 @@ function renderSelectedBoxDetails() {
     <div>y：<code>${formatNumber(placement.y)} ~ ${formatNumber(placement.y + placement.width)}</code></div>
     <div>z：<code>${formatNumber(placement.z)} ~ ${formatNumber(placement.z + placement.height)}</code></div>
     <div>尺寸：<code>${formatNumber(placement.length)} × ${formatNumber(placement.width)} × ${formatNumber(placement.height)}</code></div>
+    ${swapNote}
   `;
 }
 
@@ -4464,10 +4517,17 @@ function renderSceneTooltip(event, placement) {
     hideSceneTooltip();
     return;
   }
+  const inputBox = (state.input?.boxes ?? []).find((box) => box.id === placement.box_id);
+  const swapNote = placement.height_swapped
+    ? `<div class="swap-note">⚠ 需长宽高互换后装入${
+        inputBox ? `（录入 ${formatNumber(inputBox.length)} × ${formatNumber(inputBox.width)} × ${formatNumber(inputBox.height)}）` : ""
+      }</div>`
+    : "";
   elements.sceneTooltip.innerHTML = `
     <strong>${escapeHtml(placement.instance_id)}</strong>
     <div>类型：${escapeHtml(placement.box_id)}</div>
     <div>尺寸：${formatNumber(placement.length)} × ${formatNumber(placement.width)} × ${formatNumber(placement.height)}</div>
+    ${swapNote}
     <div>坐标：x ${formatNumber(placement.x)}，y ${formatNumber(placement.y)}，z ${formatNumber(placement.z)}</div>
   `;
   elements.sceneTooltip.classList.add("visible");

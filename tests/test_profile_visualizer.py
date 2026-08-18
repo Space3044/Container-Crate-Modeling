@@ -77,6 +77,34 @@ class ProfileVisualizerTests(unittest.TestCase):
         self.assertIn("BOX-A-001", svg)
         self.assertIn("BOX-A-002", svg)
 
+    def test_render_svg_titles_explain_height_swapped_placements(self):
+        problem = ProfilePackingInput(
+            uld=ULDProfile(
+                id="ULD-001",
+                length=120,
+                cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+            ),
+            boxes=[],
+        )
+        result = ProfilePackingResult(
+            uld_id="ULD-001",
+            loaded_count=1,
+            unloaded_count=0,
+            used_volume=250000,
+            cross_section_area=10000,
+            uld_volume=1200000,
+            volume_utilization=0.2083,
+            placements=[BoxPlacement("BOX-A", "BOX-A-001", 0, 0, 0, 100, 50, 50, True)],
+            unloaded=[],
+            validation_passed=True,
+        )
+
+        cross_section_svg = render_cross_section_svg(problem, result)
+        x_slice_svg = render_x_slice_svg(problem, result)
+
+        self.assertIn("BOX-A-001；需长宽高互换后装入", cross_section_svg)
+        self.assertIn("BOX-A-001；需长宽高互换后装入", x_slice_svg)
+
 
 if __name__ == "__main__":
     unittest.main()

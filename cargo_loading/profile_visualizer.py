@@ -82,9 +82,12 @@ def _placement_rect(placement: BoxPlacement, max_z: float, scale: float, padding
     width = placement.width * scale
     height = placement.height * scale
     label = html.escape(placement.instance_id)
+    title = html.escape(
+        f"{placement.instance_id}；需长宽高互换后装入" if placement.height_swapped else placement.instance_id
+    )
     return f"""<g>
     <rect x="{svg_x:.2f}" y="{svg_y:.2f}" width="{width:.2f}" height="{height:.2f}" fill="#f97316" fill-opacity="0.35" stroke="#9a3412" stroke-width="1"/>
-    <title>{label}</title>
+    <title>{title}</title>
     <text x="{svg_x + 3:.2f}" y="{svg_y + 13:.2f}" font-family="Arial" font-size="10" fill="#7c2d12">{label}</text>
   </g>"""
 
@@ -95,8 +98,11 @@ def _placement_rect_with_offset(placement: BoxPlacement, max_z: float, scale: fl
     width = placement.width * scale
     height = placement.height * scale
     label = html.escape(placement.instance_id)
+    title = html.escape(
+        f"{placement.instance_id}；需长宽高互换后装入" if placement.height_swapped else placement.instance_id
+    )
     return f"""<g>
       <rect x="{svg_x:.2f}" y="{svg_y:.2f}" width="{width:.2f}" height="{height:.2f}" fill="#22c55e" fill-opacity="0.35" stroke="#166534" stroke-width="1"/>
-      <title>{label}</title>
+      <title>{title}</title>
       <text x="{svg_x + 3:.2f}" y="{svg_y + 13:.2f}" font-family="Arial" font-size="10" fill="#14532d">{label}</text>
     </g>"""

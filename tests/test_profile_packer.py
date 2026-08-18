@@ -303,5 +303,36 @@ class ProfilePackerTests(unittest.TestCase):
         self.assertEqual(validate_profile_packing(full_rotatable, [upright]), [])
 
 
+    def test_height_swapped_marks_only_placements_that_changed_height(self):
+        # FLIP 只有立起来才装得下，PLAIN 维持录入高度；标记只应落在前者
+        problem = ProfilePackingInput(
+            uld=ULDProfile(id="T", length=400, cross_section=[(0, 0), (200, 0), (200, 200), (0, 200)]),
+            boxes=[
+                BoxSpec(id="FLIP", length=50, width=50, height=300, quantity=1, full_rotatable=True),
+                BoxSpec(id="PLAIN", length=60, width=40, height=80, quantity=1),
+            ],
+        )
+
+        result = pack_profile(problem)
+        by_id = {placement.box_id: placement for placement in result.placements}
+
+        self.assertEqual(result.loaded_count, 2)
+        self.assertTrue(by_id["FLIP"].height_swapped)
+        self.assertNotEqual(by_id["FLIP"].height, 300)
+        self.assertFalse(by_id["PLAIN"].height_swapped)
+
+    def test_height_swapped_stays_false_when_full_rotatable_box_keeps_input_height(self):
+        # 勾选了长宽高互换，但算法选用原始高度时不应标注
+        problem = ProfilePackingInput(
+            uld=ULDProfile(id="T", length=400, cross_section=[(0, 0), (200, 0), (200, 200), (0, 200)]),
+            boxes=[BoxSpec(id="BOX-A", length=60, width=40, height=80, quantity=3, full_rotatable=True)],
+        )
+
+        result = pack_profile(problem)
+
+        for placement in result.placements:
+            self.assertEqual(placement.height_swapped, placement.height != 80)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -216,6 +216,10 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("dimensions.length * AXIS_EXTENSION_FACTOR", script)
         self.assertIn("允许长宽互换", script)
         self.assertIn("允许长宽高互换", script)
+        self.assertIn("height_swapped", script)
+        self.assertIn("normalizeResultHeightSwapFlags", script)
+        self.assertIn("swap-badge", script)
+        self.assertIn("swap-note", script)
         self.assertIn("activeContainerStats", script)
         self.assertIn("formatPercent(activeResult.volume_utilization)", script)
         self.assertIn("单个 ULD 装载率", script)
@@ -957,6 +961,91 @@ if (JSON.stringify(boxRows[0]) !== JSON.stringify(["箱子 ID", "长", "宽", "�
 }
 if (boxRow[0] !== "BOX-A" || boxRow[1] !== 60 || boxRow[2] !== 40 || boxRow[3] !== 30 || boxRow[4] !== 5 || boxRow[5] !== "否" || boxRow[6] !== "否" || boxRow[7] !== "Q7") {
   throw new Error(`unexpected box row: ${JSON.stringify(boxRow)}`);
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_height_swapped_marker_survives_html_and_excel_exports(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const input = {
+  containers: [
+    { id: "ULD", length: 200, quantity: 1, cross_section: [[0, 0], [100, 0], [100, 100], [0, 100]] },
+  ],
+  boxes: [
+    { id: "UPRIGHT", length: 60, width: 40, height: 100, quantity: 1, full_rotatable: true },
+  ],
+};
+const result = {
+  loaded_count: 1,
+  unloaded_count: 0,
+  used_volume: 240000,
+  container_volume: 2000000,
+  volume_utilization: 0.12,
+  loaded: [{ box_id: "UPRIGHT", quantity: 1 }],
+  unloaded: [],
+  validation_passed: true,
+  validation_errors: [],
+  containers: [
+    {
+      container_id: "ULD-001",
+      container_type: "ULD",
+      loaded_count: 1,
+      unloaded_count: 0,
+      used_volume: 240000,
+      uld_volume: 2000000,
+      volume_utilization: 0.12,
+      validation_passed: true,
+      placements: [
+        {
+          box_id: "UPRIGHT",
+          instance_id: "UPRIGHT-001",
+          x: 0,
+          y: 0,
+          z: 0,
+          length: 100,
+          width: 60,
+          height: 40,
+        },
+      ],
+    },
+  ],
+};
+
+const sheets = context.buildWorkbookSheets(result, input);
+const coordinateSheet = sheets.find((sheet) => sheet.name === "装箱坐标");
+if (!coordinateSheet || coordinateSheet.rows[1][9] !== "是") {
+  throw new Error(`coordinate export should mark the swapped placement: ${JSON.stringify(coordinateSheet?.rows)}`);
+}
+const html = context.buildHtmlReport(result, input, "2026-08-18T05:00:00.000Z");
+for (const expected of [
+  "100 × 60 × 40（长宽高互换）",
+  '"height_swapped":true',
+  "swap-note",
+  "需长宽高互换后装入",
+]) {
+  if (!html.includes(expected)) {
+    throw new Error(`missing swapped marker in HTML export: ${expected}`);
+  }
 }
 """
         completed = subprocess.run(

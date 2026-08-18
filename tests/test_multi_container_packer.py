@@ -97,6 +97,37 @@ class MultiContainerPackerTests(unittest.TestCase):
         )
         self.assertTrue(result.validation_passed)
 
+    def test_pack_multi_profile_marks_height_swapped_placements(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="ULD-A",
+                    length=200,
+                    cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+                    quantity=1,
+                )
+            ],
+            boxes=[
+                BoxSpec(
+                    id="UPRIGHT",
+                    length=50,
+                    width=50,
+                    height=150,
+                    quantity=1,
+                    full_rotatable=True,
+                )
+            ],
+            search_mode="fast",
+        )
+
+        result = pack_multi_profile(problem)
+
+        self.assertEqual(result.loaded_count, 1)
+        self.assertTrue(result.validation_passed)
+        placement = result.containers[0].result.placements[0]
+        self.assertTrue(placement.height_swapped)
+        self.assertEqual((placement.length, placement.width, placement.height), (150, 50, 50))
+
     def test_pack_multi_profile_prioritizes_required_container_type_boxes(self):
         problem = MultiContainerPackingInput(
             containers=[

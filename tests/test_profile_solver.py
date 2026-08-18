@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cargo_loading.profile_models import BoxSpec
-from cargo_loading.profile_solver import merge_box_specs, packing_input_from_dict, solve_profile_file
+from cargo_loading.profile_models import BoxPlacement, BoxSpec, ProfilePackingResult
+from cargo_loading.profile_solver import merge_box_specs, packing_input_from_dict, packing_result_to_dict, solve_profile_file
 
 
 class ProfileSolverTests(unittest.TestCase):
@@ -131,6 +131,28 @@ class ProfileSolverTests(unittest.TestCase):
         problem = packing_input_from_dict(data)
 
         self.assertEqual([box.full_rotatable for box in problem.boxes], [True, False])
+
+
+    def test_placement_dict_includes_height_swapped_flag(self):
+        result = ProfilePackingResult(
+            uld_id="T",
+            loaded_count=1,
+            unloaded_count=0,
+            used_volume=1.0,
+            cross_section_area=1.0,
+            uld_volume=1.0,
+            volume_utilization=1.0,
+            placements=[
+                BoxPlacement(box_id="B", instance_id="B-001", x=0, y=0, z=0, length=3, width=2, height=1, height_swapped=True),
+                BoxPlacement(box_id="C", instance_id="C-001", x=0, y=0, z=0, length=1, width=2, height=3),
+            ],
+            unloaded=[],
+            validation_passed=True,
+        )
+
+        data = packing_result_to_dict(result)
+
+        self.assertEqual([item["height_swapped"] for item in data["placements"]], [True, False])
 
 
 if __name__ == "__main__":

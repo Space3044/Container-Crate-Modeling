@@ -148,6 +148,7 @@ def _placement_to_dict(placement: BoxPlacement) -> dict[str, object]:
         "length": placement.length,
         "width": placement.width,
         "height": placement.height,
+        "height_swapped": placement.height_swapped,
     }
 
 

@@ -186,6 +186,8 @@ class BoxPlacement:
     length: float
     width: float
     height: float
+    height_swapped: bool = False
+    """放置高度与箱型录入高度不同，即该箱子被立起或倒置装入（仅 full_rotatable 箱型可能出现）。"""
 
     @property
     def volume(self) -> float:

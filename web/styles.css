@@ -1569,6 +1569,25 @@ input[type="range"] {
   cursor: pointer;
 }
 
+/* 长宽高互换装入的箱子：坐标表角标与选中详情提示 */
+.swap-badge {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid var(--danger-border);
+  border-radius: 4px;
+  color: var(--danger);
+  background: var(--danger-bg);
+  font-size: 11px;
+  line-height: 16px;
+  vertical-align: middle;
+}
+
+.swap-note {
+  margin-top: 6px;
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
 .placements-table tr:hover,
 .placements-table tr.selected-row {
   background: var(--selected-row-bg);
