@@ -43,7 +43,6 @@ MAX_GLOBAL_SEARCH_STEPS = 1000
 MIN_BOTTOM_SUPPORT_RATIO = 0.8
 MIN_BOTTOM_SUPPORT_RATIO_HIGH_UTILIZATION = 0.7
 LOCAL_REARRANGE_MAX_PASSES = 3
-LOCAL_REARRANGE_TARGETS_PER_PASS = 1
 LAYER_BUILD_MIN_QUANTITY = 4
 COLUMN_BUILD_MIN_BOXES = 2
 COLUMN_TOPPER_CANDIDATES = 5
@@ -511,6 +510,7 @@ def _pack_multi_profile_variant(
     best_state = _refill_remaining_boxes_in_used_containers(problem, best_state, box_by_id, limits)
     best_state = _rescue_unloaded_boxes(problem, best_state, box_by_id, limits)
     best_state = _local_rearrange_state(problem, best_state, box_by_id, limits)
+    best_state = _renumber_global_placement_instances(best_state)
     return _multi_result_from_global_state(problem, best_state)
 
 
@@ -980,9 +980,21 @@ def _layer_branch_in_container(
             best_layout = layout
     if best_layout is None:
         return None
+    return _apply_layer_layout(problem, state, container_index, box, best_layout, limits)
+
+
+def _apply_layer_layout(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    container_index: int,
+    box: BoxSpec,
+    layout: list[BoxPlacement],
+    limits: SearchLimits,
+) -> GlobalPackingState | None:
     current_state = state
+    profile_input = _profile_input_for_container(problem, state.containers[container_index])
     placed = 0
-    for layout_placement in best_layout:
+    for layout_placement in layout:
         container_state = current_state.containers[container_index]
         quantity = current_state.remaining_counter[box.id]
         if quantity <= 0:
@@ -1019,6 +1031,7 @@ def _layer_layout_in_space(
     space: FreeSpace,
     problem: ProfilePackingInput,
     max_count: int,
+    include_x_partitions: bool = False,
 ) -> list[BoxPlacement]:
     """在单个空闲空间底面上枚举行组合，返回箱数最多的整层摆法。
 
@@ -1029,7 +1042,15 @@ def _layer_layout_in_space(
         orientations_by_height.setdefault(height, []).append((length, width))
     best: list[BoxPlacement] = []
     for height, orientations in orientations_by_height.items():
-        placements = _layer_layout_for_height(box, space, problem, max_count, height, orientations)
+        placements = _layer_layout_for_height(
+            box,
+            space,
+            problem,
+            max_count,
+            height,
+            orientations,
+            include_x_partitions,
+        )
         if len(placements) > len(best):
             best = placements
     return best
@@ -1042,6 +1063,7 @@ def _layer_layout_for_height(
     max_count: int,
     height: float,
     orientations: list[tuple[float, float]],
+    include_x_partitions: bool = False,
 ) -> list[BoxPlacement]:
     """固定层高后，枚举同高朝向的行组合，返回箱数最多的整层摆法。"""
     if height > space.height + EPSILON:
@@ -1083,13 +1105,13 @@ def _layer_layout_for_height(
     if best_rows is None:
         return []
 
-    placements: list[BoxPlacement] = []
+    row_layout: list[BoxPlacement] = []
     y = y_start
     for length, width, columns in sorted(best_rows, key=lambda row: -row[1]):
         for column in range(columns):
-            if len(placements) >= max_count:
-                return placements
-            placements.append(
+            if len(row_layout) >= max_count:
+                break
+            row_layout.append(
                 BoxPlacement(
                     box_id=box.id,
                     instance_id="",
@@ -1101,8 +1123,96 @@ def _layer_layout_for_height(
                     height=height,
                 )
             )
+        if len(row_layout) >= max_count:
+            break
         y += width
-    return placements
+
+    if not include_x_partitions:
+        return row_layout
+
+    block_layout = _x_partition_layer_layout(
+        box,
+        space,
+        max_count,
+        height,
+        row_options,
+        best_rows[0],
+        y_start,
+        available_width,
+        available_length,
+    )
+    if len(block_layout) > len(row_layout):
+        return block_layout
+    return row_layout
+
+
+def _x_partition_layer_layout(
+    box: BoxSpec,
+    space: FreeSpace,
+    max_count: int,
+    height: float,
+    row_options: list[tuple[float, float, int]],
+    preferred_left: tuple[float, float, int],
+    y_start: float,
+    available_width: float,
+    available_length: float,
+) -> list[BoxPlacement]:
+    """沿 x 把层切成左右两块，每块用一种朝向铺规则网格。"""
+    if len(row_options) < 2:
+        return []
+    other = row_options[0] if row_options[1] == preferred_left else row_options[1]
+    best: list[BoxPlacement] = []
+    for left, right in ((preferred_left, other), (other, preferred_left)):
+        left_length, left_width, _ = left
+        right_length, right_width, _ = right
+        left_rows = int((available_width + EPSILON) // left_width)
+        right_rows = int((available_width + EPSILON) // right_width)
+        if left_rows <= 0 or right_rows <= 0:
+            continue
+        max_left_columns = int((available_length + EPSILON) // left_length)
+        for left_columns in range(1, max_left_columns + 1):
+            split_x = left_columns * left_length
+            right_columns = int((available_length - split_x + EPSILON) // right_length)
+            if right_columns <= 0:
+                continue
+            count = min(left_columns * left_rows + right_columns * right_rows, max_count)
+            if count <= len(best):
+                continue
+            placements: list[BoxPlacement] = []
+            for row in range(left_rows):
+                for column in range(left_columns):
+                    if len(placements) >= max_count:
+                        break
+                    placements.append(
+                        BoxPlacement(
+                            box_id=box.id,
+                            instance_id="",
+                            x=space.x + column * left_length,
+                            y=y_start + row * left_width,
+                            z=space.z,
+                            length=left_length,
+                            width=left_width,
+                            height=height,
+                        )
+                    )
+            for row in range(right_rows):
+                for column in range(right_columns):
+                    if len(placements) >= max_count:
+                        break
+                    placements.append(
+                        BoxPlacement(
+                            box_id=box.id,
+                            instance_id="",
+                            x=space.x + split_x + column * right_length,
+                            y=y_start + row * right_width,
+                            z=space.z,
+                            length=right_length,
+                            width=right_width,
+                            height=height,
+                        )
+                    )
+            best = placements
+    return best
 
 
 def _footprint_key(box: BoxSpec) -> tuple[float, float]:
@@ -1605,7 +1715,7 @@ def _local_rearrange_state(
         _evacuate_and_refill,
         targets_per_pass=1,
     )
-    best_state, best_score = _run_rearrange_strategy(
+    best_state, best_score = _run_best_single_container_rearrange_strategy(
         problem,
         best_state,
         best_score,
@@ -1613,7 +1723,15 @@ def _local_rearrange_state(
         limits,
         tried_signatures,
         _ruin_and_recreate,
-        targets_per_pass=LOCAL_REARRANGE_TARGETS_PER_PASS,
+    )
+    best_state, best_score = _run_best_single_container_rearrange_strategy(
+        problem,
+        best_state,
+        best_score,
+        box_by_id,
+        limits,
+        tried_signatures,
+        _repack_with_partitioned_layer,
     )
     best_state, best_score = _run_rearrange_strategy(
         problem,
@@ -1626,6 +1744,44 @@ def _local_rearrange_state(
         targets_per_pass=2,
     )
     return best_state
+
+
+def _run_best_single_container_rearrange_strategy(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    score: tuple[object, ...],
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+    tried_signatures: set[tuple[object, ...]],
+    strategy,
+) -> tuple[GlobalPackingState, tuple[object, ...]]:
+    """逐个评估所有已用容器，接受实际全局收益最高的单容器重排。"""
+    best_state = state
+    best_score = score
+    for _ in range(LOCAL_REARRANGE_MAX_PASSES):
+        round_state: GlobalPackingState | None = None
+        round_score: tuple[object, ...] | None = None
+        for index, container in enumerate(best_state.containers):
+            if not container.placements:
+                continue
+            candidate = strategy(problem, best_state, box_by_id, limits, [index])
+            if candidate is best_state:
+                continue
+            signature = _global_state_signature(candidate)
+            if signature in tried_signatures:
+                continue
+            tried_signatures.add(signature)
+            candidate_score = _global_state_score(problem, candidate)
+            if candidate_score <= best_score:
+                continue
+            if round_score is None or candidate_score > round_score:
+                round_state = candidate
+                round_score = candidate_score
+        if round_state is None or round_score is None:
+            break
+        best_state = round_state
+        best_score = round_score
+    return best_state, best_score
 
 
 def _run_rearrange_strategy(
@@ -1784,6 +1940,58 @@ def _repack_and_refill(
         return state
     resolved = _resolve_active_only_beam(problem, evacuated, box_by_id, limits, active_only=False)
     return _refill_remaining_boxes_in_used_containers(problem, resolved, box_by_id, limits)
+
+
+def _repack_with_partitioned_layer(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+    target_indices: list[int],
+) -> GlobalPackingState:
+    """腾空单个容器，以严格优于整行布局的左右分块层为种子重新装填。"""
+    best_state = state
+    best_score = _global_state_score(problem, state)
+    for container_index in target_indices:
+        evacuated = _evacuate_containers(state, [container_index])
+        if evacuated is state:
+            continue
+        container = evacuated.containers[container_index]
+        profile_input = _profile_input_for_container(problem, container)
+        for box in problem.boxes:
+            remaining = evacuated.remaining_counter[box.id]
+            if remaining < LAYER_BUILD_MIN_QUANTITY:
+                continue
+            if not _box_allowed_in_container(box, container) or not _box_can_fit_container(box, container.spec):
+                continue
+            for space in container.free_spaces:
+                row_layout = _layer_layout_in_space(box, space, profile_input, remaining)
+                partitioned_layout = _layer_layout_in_space(
+                    box,
+                    space,
+                    profile_input,
+                    remaining,
+                    include_x_partitions=True,
+                )
+                if len(partitioned_layout) <= len(row_layout):
+                    continue
+                seeded = _apply_layer_layout(
+                    problem,
+                    evacuated,
+                    container_index,
+                    box,
+                    partitioned_layout,
+                    limits,
+                )
+                if seeded is None:
+                    continue
+                resolved = _resolve_active_only_beam(problem, seeded, box_by_id, limits)
+                resolved = _refill_remaining_boxes_in_used_containers(problem, resolved, box_by_id, limits)
+                score = _global_state_score(problem, resolved)
+                if score > best_score:
+                    best_state = resolved
+                    best_score = score
+    return best_state
 
 
 def _next_refill_state(
@@ -2053,6 +2261,7 @@ def _multi_result_from_global_state(
         for error in container.result.validation_errors
     ]
     validation_errors.extend(_required_container_validation_errors(problem, state))
+    validation_errors.extend(_duplicate_instance_id_validation_errors(state))
     used_volume = sum(container.result.used_volume for container in container_results)
     container_volume = sum(container.result.uld_volume for container in container_results)
     return MultiContainerPackingResult(
@@ -2067,6 +2276,33 @@ def _multi_result_from_global_state(
         validation_passed=not validation_errors,
         validation_errors=validation_errors,
     )
+
+
+def _renumber_global_placement_instances(state: GlobalPackingState) -> GlobalPackingState:
+    """按最终容器和放置顺序重新编号，保证实例 ID 在多 ULD 结果中全局唯一。"""
+    counters: Counter[str] = Counter()
+    containers: list[ContainerState] = []
+    for container in state.containers:
+        placements: list[BoxPlacement] = []
+        for placement in container.placements:
+            counters[placement.box_id] += 1
+            instance_id = f"{placement.box_id}-{counters[placement.box_id]:03d}"
+            placements.append(replace(placement, instance_id=instance_id))
+        containers.append(replace(container, placements=placements))
+    return GlobalPackingState(containers=containers, remaining_counter=state.remaining_counter.copy())
+
+
+def _duplicate_instance_id_validation_errors(state: GlobalPackingState) -> list[str]:
+    instance_counts = Counter(
+        placement.instance_id
+        for container in state.containers
+        for placement in container.placements
+    )
+    return [
+        f"{instance_id} is assigned to multiple placements"
+        for instance_id, count in sorted(instance_counts.items())
+        if count > 1
+    ]
 
 
 def _required_container_validation_errors(

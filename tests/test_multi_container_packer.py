@@ -737,6 +737,121 @@ class MultiContainerPackerTests(unittest.TestCase):
         self.assertLessEqual(high_result.unloaded_count, balanced_result.unloaded_count)
         self.assertTrue(high_result.validation_passed)
 
+    def test_top_and_partitioned_layer_rearrange_improve_field_layout_and_keep_ids_unique(self):
+        # 两个连续现场反例：Q5-001 需要旋转顶层 BOX-E；Q5-002 需要把底层
+        # 从 2x3 整行网格改成左侧 1x3、右侧 2x2 的分块混排。
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="Q5",
+                    length=306,
+                    cross_section=[(0, 0), (240, 0), (240, 190), (120, 290), (0, 290)],
+                    quantity=2,
+                ),
+                ContainerSpec(
+                    id="Q4",
+                    length=306,
+                    cross_section=[(0, 0), (240, 0), (240, 130), (120, 290), (0, 290)],
+                    quantity=2,
+                ),
+            ],
+            boxes=[
+                BoxSpec(id="BOX-A", length=102, width=90, height=168, quantity=1),
+                BoxSpec(id="BOX-B", length=102, width=90, height=156, quantity=18),
+                BoxSpec(id="BOX-C", length=102, width=90, height=113, quantity=1),
+                BoxSpec(id="BOX-D", length=102, width=90, height=137, quantity=1),
+                BoxSpec(id="BOX-E", length=120, width=80, height=121, quantity=20),
+                BoxSpec(id="BOX-G", length=80, width=80, height=32, quantity=1),
+            ],
+            search_mode="high_utilization",
+        )
+
+        result = _pack_multi_profile_variant(problem, 0)
+
+        self.assertEqual(result.loaded_count, 41)
+        self.assertEqual(
+            [(item.box_id, item.quantity) for item in result.unloaded],
+            [("BOX-D", 1)],
+        )
+        q5_001 = next(container for container in result.containers if container.container_id == "Q5-001")
+        top_box_e = sorted(
+            (
+                placement.x,
+                placement.y,
+                placement.z,
+                placement.length,
+                placement.width,
+                placement.height,
+            )
+            for placement in q5_001.result.placements
+            if placement.box_id == "BOX-E" and placement.z == 156
+        )
+        self.assertEqual(
+            top_box_e,
+            [(120, 0, 156, 80, 120, 121), (200, 0, 156, 80, 120, 121)],
+        )
+        q5_002 = next(container for container in result.containers if container.container_id == "Q5-002")
+        floor_box_e = sorted(
+            (placement.x, placement.y, placement.length, placement.width)
+            for placement in q5_002.result.placements
+            if placement.box_id == "BOX-E" and placement.z == 0
+        )
+        self.assertEqual(
+            floor_box_e,
+            [
+                (0, 0, 120, 80),
+                (0, 80, 120, 80),
+                (0, 160, 120, 80),
+                (120, 0, 80, 120),
+                (120, 120, 80, 120),
+                (200, 0, 80, 120),
+                (200, 120, 80, 120),
+            ],
+        )
+        instance_ids = [
+            placement.instance_id
+            for container in result.containers
+            for placement in container.result.placements
+        ]
+        self.assertEqual(len(instance_ids), len(set(instance_ids)))
+        self.assertTrue(result.validation_passed)
+
+    def test_partitioned_layer_layout_packs_seven_rotatable_boxes(self):
+        box = BoxSpec(id="BOX-E", length=120, width=80, height=121, quantity=7)
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="Q5",
+                    length=306,
+                    cross_section=[(0, 0), (240, 0), (240, 190), (120, 290), (0, 290)],
+                    quantity=1,
+                )
+            ],
+            boxes=[box],
+            search_mode="high_utilization",
+        )
+        state = _initial_global_state(problem)
+        container = state.containers[0]
+        profile_input = profile_packer._profile_input_for_container(problem, container)
+
+        row_layout = profile_packer._layer_layout_in_space(
+            box,
+            container.free_spaces[0],
+            profile_input,
+            max_count=7,
+        )
+        partitioned_layout = profile_packer._layer_layout_in_space(
+            box,
+            container.free_spaces[0],
+            profile_input,
+            max_count=7,
+            include_x_partitions=True,
+        )
+
+        self.assertEqual(len(row_layout), 6)
+        self.assertEqual(len(partitioned_layout), 7)
+        self.assertEqual(profile_packer.validate_profile_packing(profile_input, partitioned_layout), [])
+
     def test_min_support_ratio_relaxes_in_high_utilization_mode(self):
         self.assertEqual(_min_support_ratio_for_mode("fast"), MIN_BOTTOM_SUPPORT_RATIO)
         self.assertEqual(_min_support_ratio_for_mode("balanced"), MIN_BOTTOM_SUPPORT_RATIO)
