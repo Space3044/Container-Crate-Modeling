@@ -246,5 +246,62 @@ class ProfilePackerTests(unittest.TestCase):
         self.assertTrue(result.validation_passed)
 
 
+    def test_full_rotatable_allows_upright_orientation(self):
+        # 截面 100×100 装不下高 150 的箱子，只有把 150 转到 x 方向才装得进
+        problem = ProfilePackingInput(
+            uld=ULDProfile(id="T", length=200, cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)]),
+            boxes=[BoxSpec(id="BOX-A", length=50, width=50, height=150, quantity=2, full_rotatable=True)],
+        )
+
+        result = pack_profile(problem)
+
+        self.assertEqual(result.loaded_count, 2)
+        self.assertTrue(result.validation_passed)
+        for placement in result.placements:
+            self.assertEqual((placement.length, placement.width, placement.height), (150, 50, 50))
+
+    def test_full_rotatable_defaults_to_disabled(self):
+        # 不勾选时维持原规约：高度方向保持输入值，该箱型装不进去
+        box = BoxSpec(id="BOX-A", length=50, width=50, height=150, quantity=2)
+        problem = ProfilePackingInput(
+            uld=ULDProfile(id="T", length=200, cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)]),
+            boxes=[box],
+        )
+
+        self.assertFalse(box.full_rotatable)
+        self.assertEqual(pack_profile(problem).loaded_count, 0)
+
+    def test_orientation_options_cover_all_six_permutations_when_full_rotatable(self):
+        rotatable = BoxSpec(id="B", length=2, width=3, height=5, quantity=1)
+        fixed = BoxSpec(id="B", length=2, width=3, height=5, quantity=1, rotatable=False)
+        full = BoxSpec(id="B", length=2, width=3, height=5, quantity=1, full_rotatable=True)
+
+        self.assertEqual(profile_packer._orientation_options(fixed), [(2, 3, 5)])
+        self.assertEqual(profile_packer._orientation_options(rotatable), [(2, 3, 5), (3, 2, 5)])
+        self.assertEqual(
+            profile_packer._orientation_options(full),
+            [(2, 3, 5), (2, 5, 3), (3, 2, 5), (3, 5, 2), (5, 2, 3), (5, 3, 2)],
+        )
+
+    def test_validate_rejects_height_swap_without_full_rotatable(self):
+        uld = ULDProfile(id="T", length=300, cross_section=[(0, 0), (200, 0), (200, 200), (0, 200)])
+        upright = BoxPlacement(box_id="B", instance_id="B#1", x=0, y=0, z=0, length=100, width=40, height=60)
+
+        rotatable_only = ProfilePackingInput(
+            uld=uld,
+            boxes=[BoxSpec(id="B", length=60, width=40, height=100, quantity=1)],
+        )
+        full_rotatable = ProfilePackingInput(
+            uld=uld,
+            boxes=[BoxSpec(id="B", length=60, width=40, height=100, quantity=1, full_rotatable=True)],
+        )
+
+        self.assertEqual(
+            validate_profile_packing(rotatable_only, [upright]),
+            ["B#1 uses a disallowed orientation"],
+        )
+        self.assertEqual(validate_profile_packing(full_rotatable, [upright]), [])
+
+
 if __name__ == "__main__":
     unittest.main()

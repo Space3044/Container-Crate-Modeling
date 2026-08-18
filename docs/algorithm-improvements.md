@@ -792,6 +792,54 @@ Q7 现场用例：单 ULD 与多容器两条路径、三种搜索模式均从 11
   活跃容器利用率 0.6717→0.6835，balanced 本机 30.33 秒增至 37.12 秒
 ```
 
+## 第二十版：按箱型开启长宽高互换
+
+动机：部分货物物流上允许侧翻或倒置，原规约固定高度方向，这类箱型无法利用
+"立起来才装得进"的空间。业务方确认后按箱型放开全 6 朝向，默认关闭，
+只有显式勾选的箱型参与全朝向计算，既有数据的结果不受影响。
+
+做法：
+
+```text
+BoxSpec 增加 full_rotatable，默认 false，与 rotatable 独立录入
+_orientation_options 在 full_rotatable 时返回三个尺寸的全部排列（去重后最多 6 种）
+全互换已包含长宽互换，开启后 rotatable 取值不再影响可选朝向
+归并键按三维排序后比较，长宽高顺序不同的同一箱型仍然合并
+Web 箱子表格新增“长宽高互换”勾选列，默认不勾选，并入归并键与 Excel 导出
+```
+
+复合分支原本假设箱子高度恒为 `box.height`，全朝向下这个假设不再成立，一并修正：
+
+```text
+层构建按朝向高度分组，各高度分别求整层摆法后取最优，保证一层内同高、顶面平整
+立柱墙按立柱底面反查每个箱型的朝向高度，没有该底面朝向的箱型不进柱
+_topper_orientation 返回 (长, 宽, 高)，_max_volume_combo 按朝向高度而非 box.height 累计
+剪枝用的 min_height 取各箱型所有朝向里的最小高度，避免误杀可行立柱
+```
+
+校验函数原本只查边界、截面、支撑和重叠，不检查放置尺寸是否为该箱型的合法朝向。
+高度方向可变后这个缺口会放过实现 bug，因此补上朝向合法性检查：未开启
+`full_rotatable` 的箱型若出现改变高度的放置，直接记为 `uses a disallowed orientation`。
+
+对应测试：
+
+```text
+test_full_rotatable_allows_upright_orientation
+test_full_rotatable_defaults_to_disabled
+test_orientation_options_cover_all_six_permutations_when_full_rotatable
+test_validate_rejects_height_swap_without_full_rotatable
+test_merge_box_specs_merges_full_rotatable_rows_by_sorted_dimensions
+test_packing_input_from_dict_reads_full_rotatable_flag
+```
+
+效果：
+
+```text
+默认关闭时全部既有回归测试结果不变
+截面 100×100、箱子 50×50×150 的用例：关闭时 0 箱，开启后装入 2 箱并使用 (150,50,50) 朝向
+朝向数量从最多 2 种增至最多 6 种，勾选箱型的候选枚举量相应增加
+```
+
 ## 当前算法总结
 
 当前完整策略可以概括为：
@@ -818,6 +866,7 @@ Q7 现场用例：单 ULD 与多容器两条路径、三种搜索模式均从 11
 + 人工指定 ULD 类型硬约束：指定箱型只允许进入 required_container_types 中的 ULD 类型，并优先容纳
 + Beam 体积进展多样性：复合分支推进多个小箱时，保留大体积箱子的长期可行路径
 + Beam 外廓多样性配额：装载量相同时按外廓分组轮流补位，多容器路径再按放置数量分层
++ 按箱型开启长宽高互换：勾选的箱型枚举全 6 朝向，默认关闭
 ```
 
 它比初版贪心更稳定，但由于 Beam Search 只保留有限数量的状态，仍然不是数学严格最优。
@@ -847,7 +896,7 @@ GRASP 轮数和 RCL 窗口调参：当前 balanced 2 轮 / high 3 轮是保守�
 短期内还可以做的小改进：
 
 ```text
-放开箱子全 6 朝向旋转（需要业务方确认物流稳定性可接受）
+放开箱子全 6 朝向旋转（已按箱型落地，默认关闭，见第二十版）
 空闲空间裁剪策略调参（上限、低层配额比例）
 层构建扩展到单 ULD 路径（pack_profile，目前只在多容器全局搜索生效）
 ```

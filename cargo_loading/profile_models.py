@@ -73,6 +73,7 @@ class BoxSpec:
     height: float
     quantity: int
     rotatable: bool = True
+    full_rotatable: bool = False
     required_container_types: tuple[str, ...] = field(default_factory=tuple)
     _merge_source_count: int = field(default=1, init=False, compare=False, repr=False)
 
@@ -99,6 +100,7 @@ def merge_box_specs(boxes: list[BoxSpec]) -> list[BoxSpec]:
     """按实际装箱属性合并箱型，并保留每组第一行的 ID。
 
     长宽可互换的箱子，其长宽顺序不影响可选朝向，因此也视为同一箱型。
+    长宽高可互换的箱子，三个尺寸的顺序都不影响可选朝向，按三维排序后比较。
     ULD 限制按集合比较，列表顺序和重复项不影响业务含义。合并只改变数量，
     使用第一条记录的其它字段，确保输出仍然使用用户输入的第一行 ID。
     """
@@ -116,6 +118,7 @@ def merge_box_specs(boxes: list[BoxSpec]) -> list[BoxSpec]:
             height=first.height,
             quantity=first.quantity + box.quantity,
             rotatable=first.rotatable,
+            full_rotatable=first.full_rotatable,
             required_container_types=first.required_container_types,
         )
         object.__setattr__(
@@ -128,12 +131,18 @@ def merge_box_specs(boxes: list[BoxSpec]) -> list[BoxSpec]:
 
 
 def _box_merge_key(box: BoxSpec) -> tuple[object, ...]:
-    if box.rotatable:
-        footprint = tuple(sorted((box.length, box.width)))
+    if box.full_rotatable:
+        # 全互换已包含长宽互换，rotatable 取值不再影响可选朝向
+        dimensions = tuple(sorted((box.length, box.width, box.height)))
+        rotatable = True
+    elif box.rotatable:
+        dimensions = (*sorted((box.length, box.width)), box.height)
+        rotatable = True
     else:
-        footprint = (box.length, box.width)
+        dimensions = (box.length, box.width, box.height)
+        rotatable = False
     allowed_container_types = tuple(sorted(set(box.required_container_types)))
-    return (*footprint, box.height, box.rotatable, allowed_container_types)
+    return (*dimensions, rotatable, box.full_rotatable, allowed_container_types)
 
 
 @dataclass(frozen=True)

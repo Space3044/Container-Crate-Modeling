@@ -440,6 +440,7 @@ function addBoxRow(box = {}) {
     <td><input class="box-height" type="number" min="1" step="1" value="${box.height ?? 30}" aria-label="箱子高度" /></td>
     <td><input class="box-quantity" type="number" min="0" step="1" value="${box.quantity ?? 1}" aria-label="箱子数量" /></td>
     <td><input class="box-rotatable" type="checkbox" ${box.rotatable ?? true ? "checked" : ""} aria-label="允许长宽互换" /></td>
+    <td><input class="box-full-rotatable" type="checkbox" ${box.full_rotatable ? "checked" : ""} aria-label="允许长宽高互换" /></td>
     <td><input class="box-required-container-types" type="text" value="${escapeAttribute(requiredContainerTypes)}" aria-label="指定 ULD 类型" /></td>
     <td><button class="icon-button" type="button" aria-label="删除箱子">×</button></td>
   `;
@@ -517,14 +518,19 @@ function mergeBoxesForPacking(boxes) {
 }
 
 function boxMergeKey(box) {
-  const rotatable = box.rotatable !== false;
+  const fullRotatable = box.full_rotatable === true;
+  const rotatable = fullRotatable || box.rotatable !== false;
   const length = Number(box.length);
   const width = Number(box.width);
-  const footprint = rotatable
-    ? [Math.min(length, width), Math.max(length, width)]
-    : [length, width];
+  const height = Number(box.height);
+  // 全互换时三个尺寸的顺序都不影响可选朝向，按三维排序后比较
+  const dimensions = fullRotatable
+    ? [length, width, height].sort((first, second) => first - second)
+    : rotatable
+      ? [Math.min(length, width), Math.max(length, width), height]
+      : [length, width, height];
   const requiredContainerTypes = [...new Set((box.required_container_types ?? []).map(String))].sort();
-  return JSON.stringify([...footprint, Number(box.height), rotatable, requiredContainerTypes]);
+  return JSON.stringify([...dimensions, rotatable, fullRotatable, requiredContainerTypes]);
 }
 
 function updateBoxMergeNotice() {
@@ -542,7 +548,7 @@ function updateBoxMergeNotice() {
   }
 
   let heading = "计算前归并";
-  let message = "相同尺寸、长宽互换设置和 ULD 类型限制的箱子会在计算前合并，数量相加，并保留第一行 ID。";
+  let message = "相同尺寸、旋转设置和 ULD 类型限制的箱子会在计算前合并，数量相加，并保留第一行 ID。";
   let stateValue = "ready";
   if (summary) {
     if (summary.mergedRowCount > 0) {
@@ -2226,7 +2232,7 @@ function buildWorkbookSheets(result, input = null) {
     {
       name: "箱子数据",
       rows: [
-        ["箱子 ID", "长", "宽", "高", "数量", "长宽互换", "ULD 类型"],
+        ["箱子 ID", "长", "宽", "高", "数量", "长宽互换", "长宽高互换", "ULD 类型"],
         ...(exportInput.boxes ?? []).map((box) => [
           box.id ?? "",
           Number(box.length),
@@ -2234,10 +2240,11 @@ function buildWorkbookSheets(result, input = null) {
           Number(box.height),
           Number(box.quantity ?? 0),
           box.rotatable ?? true ? "是" : "否",
+          box.full_rotatable ? "是" : "否",
           (box.required_container_types ?? []).join(", "),
         ]),
       ],
-      widths: [22, 12, 12, 12, 12, 14, 24],
+      widths: [22, 12, 12, 12, 12, 14, 14, 24],
     },
     {
       name: "已装箱类型",
@@ -3249,6 +3256,7 @@ function readBoxesFromForm() {
       height: readPositiveNumber(row.querySelector(".box-height").value, `${id} 高度`),
       quantity: readNonNegativeInteger(row.querySelector(".box-quantity").value, `${id} 数量`),
       rotatable: row.querySelector(".box-rotatable").checked,
+      full_rotatable: row.querySelector(".box-full-rotatable").checked,
     };
     const requiredContainerTypes = parseRequiredContainerTypes(row.querySelector(".box-required-container-types").value);
     if (requiredContainerTypes.length > 0) {

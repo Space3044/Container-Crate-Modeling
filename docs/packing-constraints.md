@@ -40,11 +40,17 @@ x + length ≤ uld.length
 
 ```text
 rotatable = false：保持输入方向，不做任何旋转
-rotatable = true：仅允许长宽互换（绕 z 轴水平旋转 90°）
-高度方向永远保持输入值，不侧翻、不倒置
+rotatable = true：仅允许长宽互换（绕 z 轴水平旋转 90°），高度方向保持输入值
+full_rotatable = true：允许长宽高任意互换，即三个尺寸的全部 6 种排列
 ```
 
-这是业务约束，不是实现限制。放开全 6 朝向需要业务方重新确认。
+`full_rotatable` 默认为 false，按箱型单独开启，只有显式勾选的箱型才允许改变高度方向。
+开启后该箱型可以侧翻、倒置，`rotatable` 取值不再影响其可选朝向。
+
+未开启 `full_rotatable` 的箱型维持原约束：高度方向永远保持输入值，不侧翻、不倒置。
+
+这是业务约束，不是实现限制。按箱型放开全 6 朝向已由业务方确认（2026-08-18），
+默认关闭保证既有数据的计算结果不变。
 
 ### 4. 底面支撑
 
@@ -90,6 +96,8 @@ ULD 类型即 `container.id`，例如 `Q7`、`PGA`。输入校验应拒绝不存
 ```text
 box.quantity ≥ 0
 container.quantity ≥ 1（默认 1）
+box.rotatable = true | false（默认 true，长宽互换）
+box.full_rotatable = true | false（默认 false，长宽高任意互换）
 box.required_container_types = ["Q7"]（可选，仅多 ULD 输入生效）
 objective = maximize_volume | maximize_count
 search_mode = fast | balanced | high_utilization

@@ -931,8 +931,16 @@ tbody tr:last-child td {
   text-overflow: ellipsis;
 }
 
+/* 表头折行、收紧字距并居中，与下方居中的输入框对齐 */
+.box-table th {
+  white-space: normal;
+  letter-spacing: 0.04em;
+  line-height: 1.25;
+  text-align: center;
+}
+
 .box-table th:nth-child(1),
-.box-table td:nth-child(1) { width: 18%; }
+.box-table td:nth-child(1) { width: 17%; }
 .box-table th:nth-child(2),
 .box-table td:nth-child(2) { width: 11%; }
 .box-table th:nth-child(3),
@@ -943,46 +951,48 @@ tbody tr:last-child td {
 .box-table td:nth-child(5) { width: 10%; }
 .box-table th:nth-child(6),
 .box-table td:nth-child(6) {
-  width: 15%;
+  width: 9%;
   text-align: center;
 }
 .box-table th:nth-child(7),
 .box-table td:nth-child(7) {
-  width: 16%;
+  width: 10%;
+  text-align: center;
 }
 .box-table th:nth-child(8),
 .box-table td:nth-child(8) {
-  width: 8%;
+  width: 12%;
+}
+.box-table th:nth-child(9),
+.box-table td:nth-child(9) {
+  width: 9%;
   text-align: center;
 }
 
-.box-table th:nth-child(n+5),
-.box-table td:nth-child(n+5) {
-  padding-right: 6px;
-  padding-left: 6px;
+.box-table th:nth-child(n+2),
+.box-table td:nth-child(n+2) {
+  padding-right: 5px;
+  padding-left: 5px;
+}
+
+/* 删除按钮有 36px 最小宽度，窄窗口下留给内边距的余量不足，单独收紧 */
+.box-table th:nth-child(9),
+.box-table td:nth-child(9) {
+  padding-right: 2px;
+  padding-left: 2px;
 }
 
 .box-table input {
   min-width: 0;
   width: 100%;
   height: 36px;
-  padding: 0 6px;
+  padding: 0 2px;
   text-align: center;
-}
-
-.box-table td:nth-child(1) input {
-  text-align: left;
-  padding: 0 8px;
 }
 
 .box-table td:nth-child(5) input {
   max-width: 76px;
   margin: 0 auto;
-}
-
-.box-table td:nth-child(7) input {
-  text-align: left;
-  padding: 0 8px;
 }
 
 .box-table input[type="number"]::-webkit-outer-spin-button,
@@ -999,7 +1009,8 @@ tbody tr:last-child td {
   appearance: textfield;
 }
 
-.box-table td:nth-child(6) {
+.box-table td:nth-child(6),
+.box-table td:nth-child(7) {
   text-align: center;
 }
 

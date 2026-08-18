@@ -951,9 +951,9 @@ class MultiContainerPackerTests(unittest.TestCase):
         box_d = BoxSpec(id="BOX-D", length=190, width=98, height=101, quantity=2)
         box_j = BoxSpec(id="BOX-J", length=108, width=108, height=88, quantity=1)
 
-        combo = _max_volume_combo([(box_d, 190, 98, 2), (box_j, 108, 108, 1)], 290)
+        combo = _max_volume_combo([(box_d, 190, 98, 101, 2), (box_j, 108, 108, 88, 1)], 290)
 
-        counts = {spec.id: count for spec, _, _, count in combo}
+        counts = {spec.id: count for spec, _, _, _, count in combo}
         self.assertEqual(counts, {"BOX-D": 2, "BOX-J": 1})
 
     def test_column_building_improves_q5_height_band_case(self):

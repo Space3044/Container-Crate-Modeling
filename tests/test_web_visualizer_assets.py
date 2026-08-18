@@ -85,6 +85,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("悬停箱子信息", html)
         self.assertIn("<th>ID</th>", html)
         self.assertIn("<th>长宽互换</th>", html)
+        self.assertIn("<th>长宽高互换</th>", html)
         self.assertNotIn("<th>类型</th>", html)
         self.assertNotIn("<th>旋转</th>", html)
         self.assertNotIn("容器", html)
@@ -214,6 +215,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("AXIS_EXTENSION_FACTOR", script)
         self.assertIn("dimensions.length * AXIS_EXTENSION_FACTOR", script)
         self.assertIn("允许长宽互换", script)
+        self.assertIn("允许长宽高互换", script)
         self.assertIn("activeContainerStats", script)
         self.assertIn("formatPercent(activeResult.volume_utilization)", script)
         self.assertIn("单个 ULD 装载率", script)
@@ -470,9 +472,9 @@ if (tableBody.innerHTML !== "") {
         self.assertIn("top: 12px", css)
         self.assertIn("right: 18px", css)
         self.assertIn(".uld-panel .table-scroll,\n.boxes-panel .table-scroll {\n  overflow-x: hidden;", css)
-        self.assertIn(".box-table th:nth-child(n+5),\n.box-table td:nth-child(n+5)", css)
-        self.assertIn(".box-table td:nth-child(1) { width: 18%; }", css)
-        self.assertIn(".box-table td:nth-child(7) {\n  width: 16%;", css)
+        self.assertIn(".box-table th:nth-child(n+2),\n.box-table td:nth-child(n+2)", css)
+        self.assertIn(".box-table td:nth-child(1) { width: 17%; }", css)
+        self.assertIn(".box-table td:nth-child(8) {\n  width: 12%;", css)
         self.assertIn(".box-table td:nth-child(5) input", css)
         self.assertIn("max-width: 76px", css)
         self.assertIn(".box-table .icon-button", css)
@@ -950,10 +952,10 @@ if (JSON.stringify(uldRows[0]) !== JSON.stringify(["ULD ID", "长度", "数量",
 if (uldRow[0] !== "Q7" || uldRow[1] !== 306 || uldRow[2] !== 2 || uldRow[3] !== expectedCrossSection) {
   throw new Error(`unexpected ULD row: ${JSON.stringify(uldRow)}`);
 }
-if (JSON.stringify(boxRows[0]) !== JSON.stringify(["箱子 ID", "长", "宽", "高", "数量", "长宽互换", "ULD 类型"])) {
+if (JSON.stringify(boxRows[0]) !== JSON.stringify(["箱子 ID", "长", "宽", "高", "数量", "长宽互换", "长宽高互换", "ULD 类型"])) {
   throw new Error(`unexpected box header: ${JSON.stringify(boxRows[0])}`);
 }
-if (boxRow[0] !== "BOX-A" || boxRow[1] !== 60 || boxRow[2] !== 40 || boxRow[3] !== 30 || boxRow[4] !== 5 || boxRow[5] !== "否" || boxRow[6] !== "Q7") {
+if (boxRow[0] !== "BOX-A" || boxRow[1] !== 60 || boxRow[2] !== 40 || boxRow[3] !== 30 || boxRow[4] !== 5 || boxRow[5] !== "否" || boxRow[6] !== "否" || boxRow[7] !== "Q7") {
   throw new Error(`unexpected box row: ${JSON.stringify(boxRow)}`);
 }
 """

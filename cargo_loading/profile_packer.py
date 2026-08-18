@@ -3,6 +3,7 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
+from itertools import permutations
 import multiprocessing
 import random
 from collections import Counter, defaultdict
@@ -998,10 +999,33 @@ def _layer_layout_in_space(
     problem: ProfilePackingInput,
     max_count: int,
 ) -> list[BoxPlacement]:
-    """在单个空闲空间底面上枚举两种朝向的行组合，返回箱数最多的整层摆法。"""
-    if box.height > space.height + EPSILON:
+    """在单个空闲空间底面上枚举行组合，返回箱数最多的整层摆法。
+
+    整层顶面要平整，一层内必须同高，因此按朝向高度分组分别求解再取最优。
+    """
+    orientations_by_height: dict[float, list[tuple[float, float]]] = {}
+    for length, width, height in _orientation_options(box):
+        orientations_by_height.setdefault(height, []).append((length, width))
+    best: list[BoxPlacement] = []
+    for height, orientations in orientations_by_height.items():
+        placements = _layer_layout_for_height(box, space, problem, max_count, height, orientations)
+        if len(placements) > len(best):
+            best = placements
+    return best
+
+
+def _layer_layout_for_height(
+    box: BoxSpec,
+    space: FreeSpace,
+    problem: ProfilePackingInput,
+    max_count: int,
+    height: float,
+    orientations: list[tuple[float, float]],
+) -> list[BoxPlacement]:
+    """固定层高后，枚举同高朝向的行组合，返回箱数最多的整层摆法。"""
+    if height > space.height + EPSILON:
         return []
-    interval = convex_y_interval(problem.uld.cross_section, space.z, space.z + box.height)
+    interval = convex_y_interval(problem.uld.cross_section, space.z, space.z + height)
     if interval is None:
         return []
     y_start = max(space.y, interval[0])
@@ -1013,7 +1037,7 @@ def _layer_layout_in_space(
         return []
 
     row_options: list[tuple[float, float, int]] = []
-    for length, width, _height in _orientation_options(box):
+    for length, width in orientations:
         columns = int((available_length + EPSILON) // length)
         if columns > 0 and width <= available_width + EPSILON:
             row_options.append((length, width, columns))
@@ -1053,7 +1077,7 @@ def _layer_layout_in_space(
                     z=space.z,
                     length=length,
                     width=width,
-                    height=box.height,
+                    height=height,
                 )
             )
         y += width
@@ -1070,26 +1094,34 @@ def _cross_section_is_rectangular(cross_section: list[tuple[float, float]]) -> b
     return abs(polygon_area(cross_section) - max_y * max_z) <= EPSILON * max(1.0, max_y * max_z)
 
 
+def _orientation_height_for_footprint(box: BoxSpec, length: float, width: float) -> float | None:
+    """箱型以 (length, width) 为底面摆放时的高度，没有该朝向则返回 None。"""
+    for option_length, option_width, option_height in _orientation_options(box):
+        if abs(option_length - length) <= EPSILON and abs(option_width - width) <= EPSILON:
+            return option_height
+    return None
+
+
 def _topper_orientation(
     candidate: BoxSpec,
     length: float,
     width: float,
     min_ratio: float,
-) -> tuple[float, float] | None:
+) -> tuple[float, float, float] | None:
     """箱子作为柱顶压顶箱时使用的朝向；支撑率不达标则不可用。
 
     允许少量探出立柱底面（如 108 宽箱压在 98 宽的 D 箱顶上），
     只要按模式支撑率阈值仍然合法。
     """
-    best: tuple[float, float] | None = None
+    best: tuple[float, float, float] | None = None
     best_overlap = 0.0
-    for option_length, option_width, _height in _orientation_options(candidate):
+    for option_length, option_width, option_height in _orientation_options(candidate):
         overlap = min(option_length, length) * min(option_width, width)
         if overlap + EPSILON < option_length * option_width * min_ratio:
             continue
         if overlap > best_overlap:
             best_overlap = overlap
-            best = (option_length, option_width)
+            best = (option_length, option_width, option_height)
     return best
 
 
@@ -1123,14 +1155,18 @@ def _column_branch_in_container(
         return []
     profile_input = _profile_input_for_container(problem, container_state)
     min_ratio = _min_support_ratio_for_mode(problem.search_mode)
-    min_height = min(candidate.height for candidate in family)
+    # 全互换箱型的立起高度随朝向变化，剪枝取各自最矮的朝向，避免误杀可行立柱
+    min_height = min(
+        min(height for _length, _width, height in _orientation_options(candidate))
+        for candidate in family
+    )
     branches: list[GlobalPackingState] = []
     for with_toppers in (False, True):
         best_layout: list[list[tuple[BoxSpec, BoxPlacement]]] | None = None
         best_key: tuple[float, int] | None = None
         used_topper = False
         for seed_length, seed_width, _height in _orientation_options(box):
-            toppers: list[tuple[BoxSpec, float, float]] = []
+            toppers: list[tuple[BoxSpec, float, float, float]] = []
             if with_toppers:
                 for candidate in problem.boxes:
                     if state.remaining_counter[candidate.id] <= 0 or _footprint_key(candidate) == _footprint_key(box):
@@ -1139,7 +1175,7 @@ def _column_branch_in_container(
                         continue
                     orientation = _topper_orientation(candidate, seed_length, seed_width, min_ratio)
                     if orientation is not None:
-                        toppers.append((candidate, orientation[0], orientation[1]))
+                        toppers.append((candidate, *orientation))
                 toppers.sort(key=lambda item: -item[0].volume)
                 del toppers[COLUMN_TOPPER_CANDIDATES:]
                 if not toppers:
@@ -1224,7 +1260,7 @@ def _apply_column_layout(
 
 def _column_wall_layout(
     family: list[BoxSpec],
-    toppers: list[tuple[BoxSpec, float, float]],
+    toppers: list[tuple[BoxSpec, float, float, float]],
     remaining_counter: Counter,
     space: FreeSpace,
     seed_length: float,
@@ -1232,7 +1268,15 @@ def _column_wall_layout(
     problem: ProfilePackingInput,
 ) -> list[list[tuple[BoxSpec, BoxPlacement]]] | None:
     """在单个空闲空间里沿 x 排立柱，每列选总体积最大的同族组合加可选压顶箱。"""
-    min_height = min(spec.height for spec in family)
+    # 以立柱底面 (seed_length, seed_width) 摆放时各箱型的高度，没有该朝向的箱型不进柱
+    stack_heights: dict[str, float] = {}
+    for spec in family:
+        height = _orientation_height_for_footprint(spec, seed_length, seed_width)
+        if height is not None:
+            stack_heights[spec.id] = height
+    if not stack_heights:
+        return None
+    min_height = min(stack_heights.values())
     interval = convex_y_interval(problem.uld.cross_section, space.z, space.z + min_height)
     if interval is None:
         return None
@@ -1247,25 +1291,33 @@ def _column_wall_layout(
         return None
     remaining = Counter(
         {spec.id: remaining_counter[spec.id] for spec in family}
-        | {spec.id: remaining_counter[spec.id] for spec, _, _ in toppers}
+        | {spec.id: remaining_counter[spec.id] for spec, _, _, _ in toppers}
     )
     layout: list[list[tuple[BoxSpec, BoxPlacement]]] = []
     tallest_column = 0
     for index in range(columns_limit):
-        family_types = [(spec, seed_length, seed_width, remaining[spec.id]) for spec in family]
-        best_column: list[tuple[BoxSpec, float, float]] | None = None
+        family_types = [
+            (spec, seed_length, seed_width, stack_heights[spec.id], remaining[spec.id])
+            for spec in family
+            if spec.id in stack_heights
+        ]
+        best_column: list[tuple[BoxSpec, float, float, float]] | None = None
         best_volume = 0.0
         for topper in [None, *toppers]:
-            topper_height = topper[0].height if topper is not None else 0.0
+            topper_height = topper[3] if topper is not None else 0.0
             if topper is not None and (remaining[topper[0].id] <= 0 or topper_height > capacity + EPSILON):
                 continue
             combo = _max_volume_combo(family_types, capacity - topper_height)
-            column_boxes = [(spec, length, width) for spec, length, width, count in combo for _ in range(count)]
+            column_boxes = [
+                (spec, length, width, height)
+                for spec, length, width, height, count in combo
+                for _ in range(count)
+            ]
             if topper is not None:
                 if not column_boxes:
                     continue
                 column_boxes.append(topper)
-            volume = sum(spec.volume for spec, _, _ in column_boxes)
+            volume = sum(spec.volume for spec, _, _, _ in column_boxes)
             if column_boxes and volume > best_volume + EPSILON:
                 best_volume = volume
                 best_column = column_boxes
@@ -1274,7 +1326,7 @@ def _column_wall_layout(
         x = space.x + index * seed_length
         z = space.z
         column: list[tuple[BoxSpec, BoxPlacement]] = []
-        for spec, length, width in best_column:
+        for spec, length, width, height in best_column:
             column.append(
                 (
                     spec,
@@ -1286,11 +1338,11 @@ def _column_wall_layout(
                         z=z,
                         length=length,
                         width=width,
-                        height=spec.height,
+                        height=height,
                     ),
                 )
             )
-            z += spec.height
+            z += height
             remaining[spec.id] -= 1
         layout.append(column)
         tallest_column = max(tallest_column, len(column))
@@ -1325,18 +1377,19 @@ def _column_capacity(
 
 
 def _max_volume_combo(
-    types: list[tuple[BoxSpec, float, float, int]],
+    types: list[tuple[BoxSpec, float, float, float, int]],
     capacity: float,
-) -> list[tuple[BoxSpec, float, float, int]]:
+) -> list[tuple[BoxSpec, float, float, float, int]]:
     """有限数量下的一维装填：枚举各箱型数量组合，总体积最大且总高不超容量。
 
     按体积/高度密度降序搜索，配合乐观上界剪枝，
     族内箱型多时也能保持枚举量很小。
+    每个箱型带上它在当前立柱底面下的高度，全互换箱型立起后高度会变。
     """
-    ordered = sorted(types, key=lambda item: -(item[0].volume / item[0].height))
+    ordered = sorted(types, key=lambda item: -(item[0].volume / item[3]))
     suffix_density = [0.0] * (len(ordered) + 1)
     for index in range(len(ordered) - 1, -1, -1):
-        density = ordered[index][0].volume / ordered[index][0].height
+        density = ordered[index][0].volume / ordered[index][3]
         suffix_density[index] = max(density, suffix_density[index + 1])
     best_volume = 0.0
     best_counts = [0] * len(ordered)
@@ -1351,16 +1404,16 @@ def _max_volume_combo(
             return
         if total_volume + (capacity - total_height) * suffix_density[index] <= best_volume + EPSILON:
             return
-        spec, _length, _width, available = ordered[index]
-        max_count = min(available, int((capacity - total_height + EPSILON) // spec.height))
+        spec, _length, _width, height, available = ordered[index]
+        max_count = min(available, int((capacity - total_height + EPSILON) // height))
         for count in range(max_count, -1, -1):
             counts[index] = count
-            search(index + 1, total_height + count * spec.height, total_volume + count * spec.volume)
+            search(index + 1, total_height + count * height, total_volume + count * spec.volume)
         counts[index] = 0
 
     search(0, 0.0, 0.0)
     return [
-        (ordered[index][0], ordered[index][1], ordered[index][2], count)
+        (ordered[index][0], ordered[index][1], ordered[index][2], ordered[index][3], count)
         for index, count in enumerate(best_counts)
         if count > 0
     ]
@@ -2045,6 +2098,7 @@ def _active_container_utilization(containers: list[ContainerState]) -> float:
 
 def validate_profile_packing(problem: ProfilePackingInput, placements: list[BoxPlacement]) -> list[str]:
     errors: list[str] = []
+    box_by_id = {box.id: box for box in problem.boxes}
     for placement in placements:
         if placement.x < 0 or placement.y < 0 or placement.z < 0:
             errors.append(f"{placement.instance_id} has negative coordinate")
@@ -2058,6 +2112,8 @@ def validate_profile_packing(problem: ProfilePackingInput, placements: list[BoxP
             polygon=problem.uld.cross_section,
         ):
             errors.append(f"{placement.instance_id} exceeds ULD cross_section")
+        if not _placement_uses_allowed_orientation(placement, box_by_id.get(placement.box_id)):
+            errors.append(f"{placement.instance_id} uses a disallowed orientation")
         supporters = [existing for existing in placements if existing is not placement]
         if not _placement_has_enough_support(placement, supporters, _min_support_ratio_for_mode(problem.search_mode)):
             errors.append(f"{placement.instance_id} has insufficient bottom support")
@@ -2067,6 +2123,21 @@ def validate_profile_packing(problem: ProfilePackingInput, placements: list[BoxP
             if placements_overlap(first, second):
                 errors.append(f"{first.instance_id} overlaps {second.instance_id}")
     return errors
+
+
+def _placement_uses_allowed_orientation(placement: BoxPlacement, box: BoxSpec | None) -> bool:
+    """放置尺寸必须是该箱型旋转设置允许的朝向之一。
+
+    只有 full_rotatable 的箱型可以改变高度方向，其余仍限于长宽互换。
+    """
+    if box is None:
+        return True
+    return any(
+        abs(placement.length - length) <= EPSILON
+        and abs(placement.width - width) <= EPSILON
+        and abs(placement.height - height) <= EPSILON
+        for length, width, height in _orientation_options(box)
+    )
 
 
 def _expand_containers(containers: list[ContainerSpec]) -> list[tuple[ContainerSpec, str]]:
@@ -2361,6 +2432,13 @@ def _ranges_overlap(first_start: float, first_end: float, second_start: float, s
 
 
 def _orientation_options(box: BoxSpec) -> list[tuple[float, float, float]]:
+    """箱子可选的 (x 长, y 宽, z 高) 朝向。
+
+    full_rotatable 的箱型允许长宽高任意互换，即三个尺寸的全部排列；
+    否则维持原规约：rotatable 只允许长宽互换，高度方向保持输入值。
+    """
+    if box.full_rotatable:
+        return sorted(set(permutations((box.length, box.width, box.height))))
     if not box.rotatable:
         return [(box.length, box.width, box.height)]
     return sorted({(box.length, box.width, box.height), (box.width, box.length, box.height)})

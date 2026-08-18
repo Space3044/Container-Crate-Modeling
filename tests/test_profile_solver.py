@@ -105,5 +105,33 @@ class ProfileSolverTests(unittest.TestCase):
             self.assertEqual(result.loaded_count, 2)
 
 
+    def test_merge_box_specs_merges_full_rotatable_rows_by_sorted_dimensions(self):
+        # 全互换时三个尺寸的录入顺序不影响可选朝向，视为同一箱型
+        merged = merge_box_specs(
+            [
+                BoxSpec(id="BOX-A", length=100, width=80, height=50, quantity=2, full_rotatable=True),
+                BoxSpec(id="BOX-B", length=50, width=100, height=80, quantity=3, full_rotatable=True),
+                BoxSpec(id="BOX-C", length=100, width=80, height=50, quantity=1),
+            ]
+        )
+
+        self.assertEqual([(box.id, box.quantity) for box in merged], [("BOX-A", 5), ("BOX-C", 1)])
+        self.assertTrue(merged[0].full_rotatable)
+        self.assertFalse(merged[1].full_rotatable)
+
+    def test_packing_input_from_dict_reads_full_rotatable_flag(self):
+        data = {
+            "containers": [{"id": "T", "length": 200, "quantity": 1, "cross_section": [[0, 0], [100, 0], [100, 100], [0, 100]]}],
+            "boxes": [
+                {"id": "BOX-A", "length": 50, "width": 50, "height": 150, "quantity": 1, "full_rotatable": True},
+                {"id": "BOX-B", "length": 50, "width": 50, "height": 150, "quantity": 1},
+            ],
+        }
+
+        problem = packing_input_from_dict(data)
+
+        self.assertEqual([box.full_rotatable for box in problem.boxes], [True, False])
+
+
 if __name__ == "__main__":
     unittest.main()
