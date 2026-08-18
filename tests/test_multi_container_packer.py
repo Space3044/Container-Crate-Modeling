@@ -1,4 +1,6 @@
 import unittest
+from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cargo_loading.profile_packer as profile_packer
@@ -25,6 +27,44 @@ from cargo_loading.profile_packer import (
 
 
 class MultiContainerPackerTests(unittest.TestCase):
+    def test_multi_result_score_follows_selected_objective(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=20,
+                    cross_section=[(0, 0), (20, 0), (20, 20), (0, 20)],
+                    quantity=1,
+                )
+            ],
+            boxes=[],
+            objective="maximize_volume",
+        )
+        higher_volume = SimpleNamespace(
+            containers=[],
+            unloaded=[],
+            loaded_count=1,
+            unloaded_count=2,
+            used_volume=100,
+        )
+        higher_count = SimpleNamespace(
+            containers=[],
+            unloaded=[],
+            loaded_count=2,
+            unloaded_count=1,
+            used_volume=90,
+        )
+
+        self.assertGreater(
+            profile_packer._multi_result_score(problem, higher_volume),
+            profile_packer._multi_result_score(problem, higher_count),
+        )
+        count_problem = replace(problem, objective="maximize_count")
+        self.assertGreater(
+            profile_packer._multi_result_score(count_problem, higher_count),
+            profile_packer._multi_result_score(count_problem, higher_volume),
+        )
+
     def test_pack_multi_profile_merges_equivalent_rows_before_calculation(self):
         problem = MultiContainerPackingInput(
             containers=[
@@ -625,9 +665,28 @@ class MultiContainerPackerTests(unittest.TestCase):
 
         self.assertLess(fast_limits.beam_width, balanced_limits.beam_width)
         self.assertLess(fast_limits.global_branches_per_state, balanced_limits.global_branches_per_state)
+        self.assertLessEqual(fast_limits.box_type_candidates, balanced_limits.box_type_candidates)
+        self.assertLessEqual(fast_limits.container_candidates, balanced_limits.container_candidates)
+        self.assertLessEqual(fast_limits.placement_branches, balanced_limits.placement_branches)
+        self.assertLessEqual(fast_limits.max_steps, balanced_limits.max_steps)
+        self.assertLessEqual(fast_limits.max_free_spaces, balanced_limits.max_free_spaces)
         self.assertGreater(high_limits.beam_width, balanced_limits.beam_width)
         self.assertGreater(high_limits.placement_branches, balanced_limits.placement_branches)
         self.assertGreater(high_limits.max_free_spaces, balanced_limits.max_free_spaces)
+
+        large_containers = [replace(containers[0], quantity=12)]
+        large_fast = _global_search_limits(
+            MultiContainerPackingInput(containers=large_containers, boxes=boxes, search_mode="fast")
+        )
+        large_balanced = _global_search_limits(
+            MultiContainerPackingInput(containers=large_containers, boxes=boxes, search_mode="balanced")
+        )
+        large_high = _global_search_limits(
+            MultiContainerPackingInput(containers=large_containers, boxes=boxes, search_mode="high_utilization")
+        )
+        self.assertEqual(large_fast.beam_width, 2)
+        self.assertEqual(large_balanced.beam_width, 4)
+        self.assertEqual(large_high.beam_width, 5)
 
     def test_local_rearrange_is_noop_outside_high_utilization_mode(self):
         problem = MultiContainerPackingInput(
@@ -1124,6 +1183,7 @@ class MultiContainerPackerTests(unittest.TestCase):
                 BoxSpec(id="BOX-K", length=108, width=108, height=106, quantity=7),
                 BoxSpec(id="BOX-L", length=108, width=108, height=122, quantity=3),
             ],
+            objective="maximize_volume",
             search_mode="fast",
         )
 

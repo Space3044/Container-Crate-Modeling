@@ -10,6 +10,8 @@ from collections import Counter, defaultdict
 from typing import Callable, TypeVar
 
 from cargo_loading.profile_geometry import convex_y_interval, polygon_area, rectangle_inside_polygon
+from cargo_loading.cp_sat_optimizer import is_available as _cp_sat_available
+from cargo_loading.cp_sat_optimizer import optimize_single_container as _cp_sat_optimize_single_container
 from cargo_loading.profile_models import (
     BoxPlacement,
     BoxSpec,
@@ -53,6 +55,7 @@ GRASP_RCL_WINDOW = 3
 MAX_PARALLEL_SEARCH_PROCESSES = 3
 BEAM_DIVERSITY_QUOTA_DIVISOR = 3
 PROFILE_BEAM_TOP_SCORE_QUOTA_DIVISOR = 3
+CP_SAT_LOCAL_CONTAINER_CANDIDATES = 1
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,10 @@ def pack_packing(problem: ProfilePackingInput | MultiContainerPackingInput) -> P
 
 def pack_profile(problem: ProfilePackingInput) -> ProfilePackingResult:
     problem = _normalize_problem_boxes(problem)
+    return _pack_profile_mode(problem)
+
+
+def _pack_profile_mode(problem: ProfilePackingInput) -> ProfilePackingResult:
     best_result: ProfilePackingResult | None = None
     for expanded_boxes in _expanded_box_orders(problem.boxes):
         result = _pack_profile_ordered(problem, expanded_boxes)
@@ -452,8 +459,8 @@ def _multi_result_score(problem: MultiContainerPackingInput, result: MultiContai
     used_container_count = sum(1 for container in result.containers if container.result.placements)
     required_unloaded_count = _required_unloaded_count_from_result(problem, result)
     if problem.objective == "maximize_count":
-        return (-required_unloaded_count, -result.unloaded_count, -used_container_count, result.loaded_count, result.used_volume)
-    return (-required_unloaded_count, -result.unloaded_count, -used_container_count, result.used_volume, result.loaded_count)
+        return (-required_unloaded_count, result.loaded_count, result.used_volume, -used_container_count)
+    return (-required_unloaded_count, result.used_volume, result.loaded_count, -used_container_count)
 
 
 def _required_unloaded_count_from_result(
@@ -550,7 +557,12 @@ def _initial_global_state(problem: MultiContainerPackingInput) -> GlobalPackingS
 
 
 def _global_search_limits(problem: MultiContainerPackingInput) -> SearchLimits:
-    return _search_limits_for_mode(_base_global_search_limits(problem), problem.search_mode)
+    limits = _search_limits_for_mode(_base_global_search_limits(problem), problem.search_mode)
+    if problem.search_mode == SEARCH_MODE_BALANCED:
+        # 大规模档的基础 beam=3 容易让新增的短期高分分支挤掉长期可行路径。
+        # 4 个主 frontier 配合两轮 GRASP，仍保持秒级预算且不依赖 fast 结果。
+        return replace(limits, beam_width=max(4, limits.beam_width))
+    return limits
 
 
 def _base_global_search_limits(problem: MultiContainerPackingInput) -> SearchLimits:
@@ -605,14 +617,23 @@ def _base_global_search_limits(problem: MultiContainerPackingInput) -> SearchLim
 def _search_limits_for_mode(limits: SearchLimits, search_mode: str) -> SearchLimits:
     if search_mode == SEARCH_MODE_FAST:
         return SearchLimits(
-            beam_width=max(2, limits.beam_width // 2),
-            box_type_candidates=max(2, min(limits.box_type_candidates, (limits.box_type_candidates + 1) // 2)),
-            container_candidates=max(2, min(limits.container_candidates, (limits.container_candidates + 1) // 2)),
-            placement_branches=max(1, (limits.placement_branches + 1) // 2),
-            global_branches_per_state=max(8, limits.global_branches_per_state // 2),
+            beam_width=min(limits.beam_width, max(2, limits.beam_width // 2)),
+            box_type_candidates=min(
+                limits.box_type_candidates,
+                max(2, (limits.box_type_candidates + 1) // 2),
+            ),
+            container_candidates=min(
+                limits.container_candidates,
+                max(2, (limits.container_candidates + 1) // 2),
+            ),
+            placement_branches=min(limits.placement_branches, max(1, (limits.placement_branches + 1) // 2)),
+            global_branches_per_state=min(
+                limits.global_branches_per_state,
+                max(8, limits.global_branches_per_state // 2),
+            ),
             batch_placements=max(limits.batch_placements, 12),
-            max_steps=max(100, limits.max_steps // 2),
-            max_free_spaces=max(40, limits.max_free_spaces // 2),
+            max_steps=min(limits.max_steps, max(100, limits.max_steps // 2)),
+            max_free_spaces=min(limits.max_free_spaces, max(40, limits.max_free_spaces // 2)),
         )
     if search_mode == SEARCH_MODE_HIGH_UTILIZATION:
         return SearchLimits(
@@ -1724,6 +1745,14 @@ def _local_rearrange_state(
         tried_signatures,
         _ruin_and_recreate,
     )
+    if _cp_sat_available():
+        best_state, best_score = _run_cp_sat_rearrange_state(
+            problem,
+            best_state,
+            best_score,
+            box_by_id,
+            limits,
+        )
     best_state, best_score = _run_best_single_container_rearrange_strategy(
         problem,
         best_state,
@@ -1992,6 +2021,37 @@ def _repack_with_partitioned_layer(
                     best_state = resolved
                     best_score = score
     return best_state
+
+
+def _run_cp_sat_rearrange_state(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    score: tuple[object, ...],
+    box_by_id: dict[str, BoxSpec],
+    limits: SearchLimits,
+) -> tuple[GlobalPackingState, tuple[object, ...]]:
+    best_state = state
+    best_score = score
+    target_indices = _worst_container_indices(
+        state,
+        CP_SAT_LOCAL_CONTAINER_CANDIDATES,
+        skip_indices=set(),
+    )
+    for container_index in target_indices:
+        candidate = _cp_sat_optimize_single_container(
+            problem,
+            state,
+            container_index,
+            box_by_id,
+            limits,
+        )
+        if candidate is None:
+            continue
+        candidate_score = _global_state_score(problem, candidate)
+        if candidate_score > best_score:
+            best_state = candidate
+            best_score = candidate_score
+    return best_state, best_score
 
 
 def _next_refill_state(

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-ULD（航空集装箱）装箱原型。给定若干个用 y-z 截面多边形描述的 ULD 和一批长方体箱子，用启发式算法求较优装箱方案，并在浏览器中可视化。纯 Python 标准库实现，无运行时第三方依赖（pyproject.toml 中 dependencies 为空），Python >= 3.12。
+ULD（航空集装箱）装箱原型。给定若干个用 y-z 截面多边形描述的 ULD 和一批长方体箱子，用启发式算法求较优装箱方案，并在浏览器中可视化。高装载率模式使用 OR-Tools CP-SAT 做小规模单 ULD 局部优化；其余服务和几何代码使用 Python 标准库，Python >= 3.12。
 
 ## 常用命令
 
@@ -37,7 +37,8 @@ Windows 下 venv 解释器位于 `.venv/Scripts/python.exe`。
 `cargo_loading/` 各模块职责：
 
 - `profile_models.py`：全部输入/输出 frozen dataclass 和校验。坐标约定：x = ULD 长度方向，y-z = 截面多边形平面。`search_mode` 取值 `fast | balanced | high_utilization`。输入分单 ULD（`ProfilePackingInput`，JSON 顶层有 `uld` 键）和多容器（`MultiContainerPackingInput`，顶层有 `containers` 键），由 `packing_input_from_dict` 自动分派。
-- `profile_packer.py`：核心装箱算法（项目主体）。Beam Search + Maximal Spaces 空闲空间集合（`FreeSpace`，凸截面斜边滑入放置）+ 重复箱型层构建（混合朝向行组合整层分支）+ 立柱墙构建（同底面箱型族叠到截面顶、柱顶跨箱型压顶，仅非矩形截面启用）+ 多排序试跑 + 多 ULD 全局搜索 + Top-K 剪枝 + GRASP 随机重启（种子固定可复现，`_round_plan` 按模式和规模定轮数）。收尾阶段依次跑补空、定向腾挪（救回强约束箱型）和局部重排（含最差两 ULD 联合重装）。文件顶部的常量（beam 宽度、分支数、支撑率阈值等）是调参入口；`SearchLimits` 按 `search_mode` 切换三档参数。高装载率模式额外启用 multistart 排序变体和 0.7 支撑率。算法演进史和每版对应的回归测试见 `docs/algorithm-improvements.md`，改算法前先读它。
+- `profile_packer.py`：核心装箱算法（项目主体）。Beam Search + Maximal Spaces 空闲空间集合（`FreeSpace`，凸截面斜边滑入放置）+ 重复箱型层构建（混合朝向行组合整层分支）+ 立柱墙构建（同底面箱型族叠到截面顶、柱顶跨箱型压顶，仅非矩形截面启用）+ 多排序试跑 + 多 ULD 全局搜索 + Top-K 剪枝 + GRASP 随机重启（种子固定可复现，`_round_plan` 按模式和规模定轮数）。收尾阶段依次跑补空、定向腾挪（救回强约束箱型）和局部重排（含最差两 ULD 联合重装）。文件顶部的常量（beam 宽度、分支数、支撑率阈值等）是调参入口；`SearchLimits` 按 `search_mode` 切换三档参数。高装载率模式额外启用 multistart 排序变体、0.7 支撑率和 CP-SAT 单 ULD 局部优化。算法演进史和每版对应的回归测试见 `docs/algorithm-improvements.md`，改算法前先读它。
+- `cp_sat_optimizer.py`：可选的 OR-Tools CP-SAT 局部优化后端。对小规模单 ULD 联合决定箱子是否装入、朝向和三维坐标，模型内约束截面边界、非重叠和单主支撑面覆盖，最终仍调用统一合法性校验；依赖不可用或问题超过规模上限时自动回退启发式结果。
 - `profile_geometry.py`：2D 凸多边形几何（凸性校验、点在多边形内、矩形 4 角点检验、斜边下可用 y 区间）。截面仅支持凸多边形，输入校验直接拒绝凹多边形。
 - `profile_solver.py`：JSON ↔ dataclass 转换层和文件求解入口 `solve_profile_file`。
 - `profile_visualizer.py`：单 ULD 结果的 SVG 渲染（截面预览、x 切片）。

@@ -11,6 +11,7 @@ class PackagingAssetsTests(unittest.TestCase):
         self.assertNotIn("push:", workflow)
         self.assertIn("runs-on: windows-latest", workflow)
         self.assertIn("runs-on: macos-latest", workflow)
+        self.assertEqual(workflow.count("python -m pip install -U pip pyinstaller ."), 2)
         self.assertIn('--add-data "web;web"', workflow)
         self.assertIn('--add-data "data;data"', workflow)
         self.assertIn('--add-data "web:web"', workflow)

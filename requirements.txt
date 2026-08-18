@@ -1,2 +1,2 @@
-# Project currently uses only the Python standard library.
-# Runtime dependencies are declared in pyproject.toml: dependencies = [].
+# Keep this in sync with pyproject.toml for direct pip installs.
+ortools>=9.15,<10

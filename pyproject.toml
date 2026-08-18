@@ -7,7 +7,9 @@ name = "container-crate-modeling"
 version = "0.1.0"
 description = "Single ULD profile packing prototype"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "ortools>=9.15,<10",
+]
 
 [tool.setuptools]
 packages = ["cargo_loading"]
