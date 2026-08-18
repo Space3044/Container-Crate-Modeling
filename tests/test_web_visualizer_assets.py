@@ -734,6 +734,7 @@ process.stdout.write(JSON.stringify(context.__fallbackInput.containers));
             expected_containers,
         )
         self.assertTrue(all(container["quantity"] == 0 for container in sample["containers"]))
+        self.assertEqual(sample["objective"], "maximize_count")
         self.assertIn('class="container-quantity" type="number" min="0"', script)
         self.assertIn('value="${container.quantity ?? 0}"', script)
         self.assertIn("readNonNegativeInteger(row.querySelector(\".container-quantity\").value", script)

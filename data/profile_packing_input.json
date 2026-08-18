@@ -44,6 +44,6 @@
     }
   ],
   "boxes": [],
-  "objective": "maximize_volume",
+  "objective": "maximize_count",
   "search_mode": "balanced"
 }
