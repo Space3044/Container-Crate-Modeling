@@ -8,6 +8,20 @@ from cargo_loading.profile_solver import merge_box_specs, packing_input_from_dic
 
 
 class ProfileSolverTests(unittest.TestCase):
+    def test_packing_input_defaults_to_maximize_count(self):
+        problem = packing_input_from_dict(
+            {
+                "uld": {
+                    "id": "ULD-001",
+                    "length": 120,
+                    "cross_section": [[0, 0], [100, 0], [100, 60], [70, 90], [0, 90]],
+                },
+                "boxes": [],
+            }
+        )
+
+        self.assertEqual(problem.objective, "maximize_count")
+
     def test_merge_box_specs_preserves_first_id_and_sums_rotatable_rows(self):
         merged = merge_box_specs(
             [

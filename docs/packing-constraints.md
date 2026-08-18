@@ -99,7 +99,7 @@ container.quantity ≥ 1（默认 1）
 box.rotatable = true | false（默认 true，长宽互换）
 box.full_rotatable = true | false（默认 false，长宽高任意互换）
 box.required_container_types = ["Q7"]（可选，仅多 ULD 输入生效）
-objective = maximize_volume | maximize_count
+objective = maximize_count | maximize_volume（默认 `maximize_count`）
 search_mode = fast | balanced | high_utilization
 ```
 

@@ -149,7 +149,7 @@ def _box_merge_key(box: BoxSpec) -> tuple[object, ...]:
 class ProfilePackingInput:
     uld: ULDProfile
     boxes: list[BoxSpec]
-    objective: str = "maximize_volume"
+    objective: str = "maximize_count"
     search_mode: str = SEARCH_MODE_BALANCED
 
     def __post_init__(self) -> None:
@@ -160,7 +160,7 @@ class ProfilePackingInput:
 class MultiContainerPackingInput:
     containers: list[ContainerSpec]
     boxes: list[BoxSpec]
-    objective: str = "maximize_volume"
+    objective: str = "maximize_count"
     search_mode: str = SEARCH_MODE_BALANCED
 
     def __post_init__(self) -> None:
