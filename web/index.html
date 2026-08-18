@@ -239,6 +239,39 @@
           </div>
         </div>
       </section>
+
+      <section class="panel yz-query-panel" aria-labelledby="yz-query-title">
+        <div class="panel-title">
+          <span class="panel-kicker">Profile Query</span>
+          <h2 id="yz-query-title">y-z 截面查询</h2>
+          <p>同步上方 ULD 列表的截面数据；选择 ULD 并输入 y，查看该位置可用的 z 区间和最高边界。</p>
+        </div>
+        <div class="yz-query-body">
+          <div class="yz-query-visual">
+            <div class="yz-query-toolbar">
+              <label for="yzUldSelect">
+                查询 ULD
+                <select id="yzUldSelect" aria-label="选择要查询的 ULD 截面"></select>
+              </label>
+              <div id="yzProfileMeta" class="yz-profile-meta muted-text">等待 ULD 数据</div>
+            </div>
+            <canvas id="yzProfileCanvas" aria-label="当前 ULD 的 y-z 截面查询图"></canvas>
+          </div>
+          <div class="yz-query-controls">
+            <div class="yz-query-control-heading">
+              <span>查询位置</span>
+              <strong id="yzQueryValue">y = --</strong>
+            </div>
+            <label for="yzQueryYInput">
+              y 坐标
+              <input id="yzQueryYInput" type="number" step="any" inputmode="decimal" placeholder="输入 y" />
+            </label>
+            <input id="yzQuerySlider" type="range" min="0" max="1" step="any" value="0" aria-label="拖动选择 y 坐标" />
+            <div id="yzQueryResult" class="yz-query-result muted-text">请选择 ULD 截面</div>
+            <p id="yzQueryHint" class="yz-query-hint">图中的竖线表示当前 y，亮点表示该 y 处的最高 z 边界。</p>
+          </div>
+        </div>
+      </section>
     </main>
   </body>
 </html>

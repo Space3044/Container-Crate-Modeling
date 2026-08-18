@@ -40,6 +40,15 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "animationSpeedSlider",
             "animationSpeedValue",
             "themeToggleButton",
+            "yz-query-title",
+            "yzUldSelect",
+            "yzProfileMeta",
+            "yzProfileCanvas",
+            "yzQueryYInput",
+            "yzQuerySlider",
+            "yzQueryValue",
+            "yzQueryResult",
+            "yzQueryHint",
         ]:
             self.assertIn(f'id="{expected_id}"', html)
         self.assertNotIn("只改变截面查看，不改变装箱结果", html)
@@ -192,6 +201,16 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "toggleTheme",
             "applyTheme",
             "updateThemeToggle",
+            "getYzQueryContainers",
+            "syncYzQueryContainersFromForm",
+            "renderYzUldSelector",
+            "selectYzQueryUld",
+            "yzCrossSectionBounds",
+            "yzBoundaryAtY",
+            "setYzQueryY",
+            "renderYzProfileQuery",
+            "drawYzProfileQuery",
+            "selectYzQueryAtPointer",
         ]:
             self.assertIn(f"function {expected_function}", script)
         self.assertIn("containers:", script)
@@ -218,6 +237,10 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("允许长宽高互换", script)
         self.assertIn("height_swapped", script)
         self.assertIn("normalizeResultHeightSwapFlags", script)
+        self.assertIn("containerTableBody.addEventListener(\"input\", syncYzQueryContainersFromForm)", script)
+        self.assertIn("containerTableBody.addEventListener(\"change\", syncYzQueryContainersFromForm)", script)
+        self.assertIn("syncYzQueryToActiveContainer", script)
+        self.assertIn("drawYzProfileQuery()", script)
         self.assertIn("swap-badge", script)
         self.assertIn("swap-note", script)
         self.assertIn("activeContainerStats", script)
@@ -312,6 +335,47 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn('elements.importBoxesButton.addEventListener("click", importBulkBoxes)', script)
         self.assertIn("if (!elements.bulkBoxInput) {", script)
         self.assertIn("批量粘贴入口不可用", script)
+
+    def test_yz_query_interpolates_cross_section_boundaries(self):
+        node_script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const code = fs.readFileSync("web/app.js", "utf8");
+const context = {
+  document: { addEventListener: () => {} },
+  structuredClone,
+  console,
+};
+vm.createContext(context);
+vm.runInContext(code, context);
+
+const q7 = [[0, 0], [240, 0], [240, 240], [120, 290], [0, 290]];
+const bounds = context.yzCrossSectionBounds(q7);
+if (JSON.stringify(bounds) !== JSON.stringify({ minY: 0, maxY: 240, minZ: 0, maxZ: 290 })) {
+  throw new Error(`unexpected Q7 bounds: ${JSON.stringify(bounds)}`);
+}
+const atSlope = context.yzBoundaryAtY(q7, 180);
+if (Math.abs(atSlope.minZ - 0) > 1e-9 || Math.abs(atSlope.maxZ - 265) > 1e-9) {
+  throw new Error(`unexpected interpolated z interval: ${JSON.stringify(atSlope)}`);
+}
+const atFloorEdge = context.yzBoundaryAtY(q7, 0);
+if (Math.abs(atFloorEdge.minZ - 0) > 1e-9 || Math.abs(atFloorEdge.maxZ - 290) > 1e-9) {
+  throw new Error(`unexpected edge interval: ${JSON.stringify(atFloorEdge)}`);
+}
+if (context.yzBoundaryAtY(q7, 300) !== null) {
+  throw new Error("out-of-range y should not return a z interval");
+}
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=node_script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
 
     def test_export_file_names_are_stable_across_runner_timezones(self):
         node_script = r"""
@@ -592,6 +656,18 @@ if (!legacy.includes('class="history-elapsed">耗时 --</span>')) {
         self.assertIn("--text: #e6edfb;", css)
         self.assertIn("--muted: #94a3b8;", css)
         self.assertIn(".theme-toggle-button", css)
+
+    def test_yz_query_area_uses_the_full_width_workspace_row_and_responsive_layout(self):
+        css = Path("web/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('"yz-query yz-query yz-query"', css)
+        self.assertIn('"yz-query yz-query"', css)
+        self.assertIn('"yz-query"', css)
+        self.assertIn(".yz-query-panel {", css)
+        self.assertIn(".yz-query-body {", css)
+        self.assertIn(".yz-query-toolbar", css)
+        self.assertIn("#yzProfileCanvas", css)
+        self.assertIn(".yz-query-result", css)
 
     def test_visualizer_defaults_to_field_uld_rows_with_zero_quantities_and_no_sample_box(self):
         script = Path("web/app.js").read_text(encoding="utf-8")

@@ -418,7 +418,8 @@ select:focus-visible {
   grid-template-areas:
     "uld boxes overview"
     "details details details"
-    "viewer viewer viewer";
+    "viewer viewer viewer"
+    "yz-query yz-query yz-query";
   align-items: stretch;
   gap: var(--workspace-gap);
   padding: 28px var(--page-padding-x) 40px;
@@ -429,6 +430,7 @@ select:focus-visible {
 .result-overview { grid-area: overview; }
 .viewer-panel { grid-area: viewer; align-self: start; }
 .result-details { grid-area: details; align-self: start; }
+.yz-query-panel { grid-area: yz-query; align-self: start; }
 
 .panel {
   position: relative;
@@ -650,6 +652,142 @@ select:focus-visible {
   background: var(--viewer-panel-bg);
   box-shadow: var(--viewer-panel-shadow);
   backdrop-filter: blur(20px);
+}
+
+.yz-query-panel {
+  display: grid;
+  gap: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--viewer-panel-bg);
+  box-shadow: var(--viewer-panel-shadow);
+}
+
+.yz-query-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.65fr);
+  gap: 14px;
+  padding: 0 18px 18px;
+}
+
+.yz-query-visual,
+.yz-query-controls {
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--section-card-bg);
+}
+
+.yz-query-visual {
+  display: grid;
+  grid-template-rows: auto minmax(320px, 1fr);
+  overflow: hidden;
+}
+
+.yz-query-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--projection-title-bg);
+}
+
+.yz-query-toolbar label {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: min(100%, 420px);
+}
+
+.yz-query-toolbar select {
+  min-width: 0;
+  height: 38px;
+}
+
+.yz-profile-meta {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#yzProfileCanvas {
+  width: 100%;
+  min-height: 320px;
+  display: block;
+  background: var(--canvas-surface-bg);
+  background-size:
+    32px 32px,
+    32px 32px,
+    auto,
+    auto;
+  cursor: crosshair;
+}
+
+.yz-query-controls {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  padding: 18px;
+}
+
+.yz-query-control-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed var(--border-soft);
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.yz-query-control-heading strong {
+  color: var(--accent-strong);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 16px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.yz-query-controls input[type="number"] {
+  height: 42px;
+}
+
+.yz-query-controls input[type="range"] {
+  margin: 2px 0 0;
+}
+
+.yz-query-result {
+  padding: 14px;
+  border-left: 3px solid var(--accent);
+  background: var(--block-quiet);
+  color: var(--text-strong);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.yz-query-result code {
+  color: var(--accent-strong);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.yz-query-result strong {
+  color: var(--text-strong);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.yz-query-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
 }
 
 .viewer-header {
@@ -1646,7 +1784,8 @@ input[type="range"] {
       "uld boxes"
       "overview overview"
       "details details"
-      "viewer viewer";
+      "viewer viewer"
+      "yz-query yz-query";
   }
 
   .result-details {
@@ -1691,7 +1830,8 @@ input[type="range"] {
       "boxes"
       "overview"
       "details"
-      "viewer";
+      "viewer"
+      "yz-query";
   }
 
   .result-details {
@@ -1723,6 +1863,10 @@ input[type="range"] {
   }
 
   .viewer-body {
+    grid-template-columns: 1fr;
+  }
+
+  .yz-query-body {
     grid-template-columns: 1fr;
   }
 
@@ -1793,6 +1937,24 @@ input[type="range"] {
   .section-card,
   .result-section {
     padding: 14px;
+  }
+
+  .yz-query-body {
+    padding: 0 14px 14px;
+  }
+
+  .yz-query-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .yz-query-toolbar label {
+    grid-template-columns: 1fr;
+    min-width: 0;
+  }
+
+  .yz-profile-meta {
+    white-space: normal;
   }
 
   button {

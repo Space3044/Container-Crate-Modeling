@@ -142,6 +142,9 @@ const state = {
   boxMergeSummary: null,
   historyRecords: [],
   sliceX: 0,
+  yzUldId: null,
+  yzQueryY: null,
+  yzQueryContainers: [],
   camera: {
     yaw: -0.72,
     pitch: 0.58,
@@ -224,6 +227,14 @@ function cacheElements() {
   elements.activeContainerStats = document.getElementById("activeContainerStats");
   elements.selectedBoxDetails = document.getElementById("selectedBoxDetails");
   elements.placementsTableBody = document.getElementById("placementsTableBody");
+  elements.yzUldSelect = document.getElementById("yzUldSelect");
+  elements.yzProfileMeta = document.getElementById("yzProfileMeta");
+  elements.yzProfileCanvas = document.getElementById("yzProfileCanvas");
+  elements.yzQueryYInput = document.getElementById("yzQueryYInput");
+  elements.yzQuerySlider = document.getElementById("yzQuerySlider");
+  elements.yzQueryValue = document.getElementById("yzQueryValue");
+  elements.yzQueryResult = document.getElementById("yzQueryResult");
+  elements.yzQueryHint = document.getElementById("yzQueryHint");
   elements.canvas = document.getElementById("sceneCanvas");
   elements.sceneTooltip = document.getElementById("sceneTooltip");
   elements.sceneStage = elements.canvas.parentElement;
@@ -233,7 +244,10 @@ function cacheElements() {
 }
 
 function bindEvents() {
-  elements.addContainerButton.addEventListener("click", () => addContainerRow());
+  elements.addContainerButton.addEventListener("click", () => {
+    addContainerRow();
+    syncYzQueryContainersFromForm();
+  });
   elements.addBoxButton.addEventListener("click", () => {
     addBoxRow();
     markBoxInputChanged();
@@ -253,6 +267,12 @@ function bindEvents() {
   elements.boxTableBody.addEventListener("change", markBoxInputChanged);
   elements.themeToggleButton.addEventListener("click", toggleTheme);
   elements.containerSelector.addEventListener("change", () => selectContainer(elements.containerSelector.value));
+  elements.containerTableBody.addEventListener("input", syncYzQueryContainersFromForm);
+  elements.containerTableBody.addEventListener("change", syncYzQueryContainersFromForm);
+  elements.yzUldSelect.addEventListener("change", () => selectYzQueryUld(elements.yzUldSelect.value));
+  elements.yzQueryYInput.addEventListener("input", () => setYzQueryY(elements.yzQueryYInput.value));
+  elements.yzQuerySlider.addEventListener("input", () => setYzQueryY(elements.yzQuerySlider.value));
+  elements.yzProfileCanvas.addEventListener("pointerdown", selectYzQueryAtPointer);
   elements.loadSampleButton.addEventListener("click", async () => {
     await loadSample();
     drawAllViews();
@@ -355,6 +375,7 @@ async function loadSample() {
 function writeInputToForm(input, { mergeSummary = null } = {}) {
   const normalized = normalizeInput(input);
   state.boxMergeSummary = mergeSummary;
+  state.yzQueryContainers = structuredClone(normalized.containers);
   elements.containerTableBody.innerHTML = "";
   normalized.containers.forEach((container) => addContainerRow(container));
   elements.boxTableBody.innerHTML = "";
@@ -362,6 +383,7 @@ function writeInputToForm(input, { mergeSummary = null } = {}) {
   updateBoxTotalCount();
   elements.searchModeSelect.value = normalized.search_mode;
   updateBoxMergeNotice();
+  renderYzUldSelector();
 }
 
 async function readJsonResponse(response) {
@@ -456,7 +478,10 @@ function addContainerRow(container = {}) {
     <td><textarea class="container-cross-section" rows="3" aria-label="ULD y-z 截面点">${escapeHtml(JSON.stringify(crossSection))}</textarea></td>
     <td><button class="icon-button" type="button" aria-label="删除 ULD">×</button></td>
   `;
-  row.querySelector("button").addEventListener("click", () => row.remove());
+  row.querySelector("button").addEventListener("click", () => {
+    row.remove();
+    syncYzQueryContainersFromForm();
+  });
   elements.containerTableBody.appendChild(row);
 }
 
@@ -3069,6 +3094,8 @@ async function calculatePacking(options = {}) {
       throw new Error(data.error || "计算失败");
     }
     state.input = input;
+    state.yzQueryContainers = structuredClone(input.containers);
+    renderYzUldSelector();
     state.result = normalizeResultHeightSwapFlags(data.result, input);
     const serverElapsedSeconds = Number(data.elapsed_seconds);
     const elapsedSeconds = Number.isFinite(serverElapsedSeconds)
@@ -3367,6 +3394,294 @@ function updateSliceValue() {
   elements.sliceValue.textContent = formatNumber(state.sliceX);
 }
 
+function getYzQueryContainers() {
+  return state.yzQueryContainers.length > 0 ? state.yzQueryContainers : state.input?.containers ?? [];
+}
+
+function syncYzQueryContainersFromForm() {
+  if (!elements.containerTableBody) {
+    return;
+  }
+  const containers = [...elements.containerTableBody.querySelectorAll("tr")]
+    .map((row) => {
+      const id = row.querySelector(".container-id")?.value.trim();
+      const length = Number(row.querySelector(".container-length")?.value);
+      let crossSection = null;
+      try {
+        crossSection = JSON.parse(row.querySelector(".container-cross-section")?.value ?? "");
+      } catch {
+        return null;
+      }
+      if (
+        !id
+        || !Number.isFinite(length)
+        || !Array.isArray(crossSection)
+        || crossSection.length < 3
+        || !crossSection.every(
+          (point) => Array.isArray(point) && point.length === 2 && point.every((value) => Number.isFinite(Number(value))),
+        )
+      ) {
+        return null;
+      }
+      return {
+        id,
+        length,
+        quantity: Number(row.querySelector(".container-quantity")?.value ?? 0),
+        cross_section: crossSection.map(([y, z]) => [Number(y), Number(z)]),
+      };
+    })
+    .filter(Boolean);
+  state.yzQueryContainers = containers;
+  if (!containers.some((container) => container.id === state.yzUldId)) {
+    state.yzUldId = containers[0]?.id ?? null;
+    state.yzQueryY = null;
+  }
+  renderYzUldSelector();
+}
+
+function renderYzUldSelector() {
+  if (!elements.yzUldSelect) {
+    return;
+  }
+  const containers = getYzQueryContainers();
+  if (!containers.some((container) => container.id === state.yzUldId)) {
+    state.yzUldId = containers[0]?.id ?? null;
+    state.yzQueryY = null;
+  }
+  if (containers.length === 0) {
+    elements.yzUldSelect.innerHTML = '<option value="">暂无 ULD 数据</option>';
+    elements.yzUldSelect.disabled = true;
+    renderYzProfileQuery();
+    return;
+  }
+  elements.yzUldSelect.disabled = false;
+  elements.yzUldSelect.innerHTML = containers
+    .map((container) => {
+      const quantity = Number(container.quantity);
+      const quantityLabel = Number.isFinite(quantity) ? `，数量 ${quantity}` : "";
+      return `<option value="${escapeAttribute(container.id)}">${escapeHtml(container.id)}（长度 ${formatNumber(container.length)}${quantityLabel}）</option>`;
+    })
+    .join("");
+  elements.yzUldSelect.value = state.yzUldId ?? containers[0].id;
+  renderYzProfileQuery();
+}
+
+function getYzQueryContainer() {
+  const containers = getYzQueryContainers();
+  return containers.find((container) => container.id === state.yzUldId) ?? containers[0] ?? null;
+}
+
+function syncYzQueryToActiveContainer() {
+  const activeResult = getActiveResult();
+  const activeType = activeResult?.container_type ?? activeResult?.uld_id;
+  const containers = getYzQueryContainers();
+  if (!activeType || !containers.some((container) => container.id === activeType)) {
+    renderYzProfileQuery();
+    return;
+  }
+  if (state.yzUldId !== activeType) {
+    state.yzUldId = activeType;
+    state.yzQueryY = null;
+  }
+  if (elements.yzUldSelect) {
+    elements.yzUldSelect.value = activeType;
+  }
+  renderYzProfileQuery();
+}
+
+function selectYzQueryUld(uldId) {
+  if (!getYzQueryContainers().some((container) => container.id === uldId)) {
+    return;
+  }
+  state.yzUldId = uldId;
+  state.yzQueryY = null;
+  const matchingResult = state.result?.containers?.find((container) => container.container_type === uldId);
+  if (matchingResult) {
+    selectContainer(matchingResult.container_id);
+    return;
+  }
+  renderYzProfileQuery();
+  drawAllViews();
+}
+
+function yzCrossSectionBounds(crossSection) {
+  if (!Array.isArray(crossSection) || crossSection.length < 3) {
+    return null;
+  }
+  const points = crossSection
+    .map(([y, z]) => [Number(y), Number(z)])
+    .filter(([y, z]) => Number.isFinite(y) && Number.isFinite(z));
+  if (points.length < 3) {
+    return null;
+  }
+  return {
+    minY: Math.min(...points.map(([y]) => y)),
+    maxY: Math.max(...points.map(([y]) => y)),
+    minZ: Math.min(...points.map(([, z]) => z)),
+    maxZ: Math.max(...points.map(([, z]) => z)),
+  };
+}
+
+function yzBoundaryAtY(crossSection, queryY) {
+  if (!Array.isArray(crossSection) || !Number.isFinite(Number(queryY))) {
+    return null;
+  }
+  const y = Number(queryY);
+  const epsilon = 1e-9;
+  const zValues = [];
+  for (let index = 0; index < crossSection.length; index += 1) {
+    const first = crossSection[index];
+    const second = crossSection[(index + 1) % crossSection.length];
+    if (!Array.isArray(first) || !Array.isArray(second)) {
+      continue;
+    }
+    const [y1, z1] = first.map(Number);
+    const [y2, z2] = second.map(Number);
+    if (![y1, z1, y2, z2].every(Number.isFinite)) {
+      continue;
+    }
+    if (Math.abs(y2 - y1) <= epsilon) {
+      if (Math.abs(y - y1) <= epsilon) {
+        zValues.push(z1, z2);
+      }
+      continue;
+    }
+    if (y < Math.min(y1, y2) - epsilon || y > Math.max(y1, y2) + epsilon) {
+      continue;
+    }
+    const ratio = (y - y1) / (y2 - y1);
+    if (ratio >= -epsilon && ratio <= 1 + epsilon) {
+      zValues.push(z1 + ratio * (z2 - z1));
+    }
+  }
+  if (zValues.length === 0) {
+    return null;
+  }
+  return {
+    minZ: Math.min(...zValues),
+    maxZ: Math.max(...zValues),
+  };
+}
+
+function setYzQueryY(rawValue) {
+  const container = getYzQueryContainer();
+  const bounds = container ? yzCrossSectionBounds(container.cross_section) : null;
+  const numeric = Number(rawValue);
+  if (!bounds || !Number.isFinite(numeric)) {
+    return;
+  }
+  state.yzQueryY = clamp(numeric, bounds.minY, bounds.maxY);
+  renderYzProfileQuery();
+}
+
+function renderYzProfileQuery() {
+  const container = getYzQueryContainer();
+  const bounds = container ? yzCrossSectionBounds(container.cross_section) : null;
+  if (!container || !bounds) {
+    if (elements.yzProfileMeta) {
+      elements.yzProfileMeta.textContent = "等待有效的 ULD 截面数据";
+    }
+    if (elements.yzQueryValue) {
+      elements.yzQueryValue.textContent = "y = --";
+    }
+    if (elements.yzQueryResult) {
+      elements.yzQueryResult.textContent = "请选择有效的 ULD 截面";
+    }
+    drawYzProfileQuery();
+    return;
+  }
+
+  const queryY = Number.isFinite(state.yzQueryY) ? clamp(state.yzQueryY, bounds.minY, bounds.maxY) : bounds.minY;
+  state.yzQueryY = queryY;
+  if (elements.yzProfileMeta) {
+    elements.yzProfileMeta.textContent = `${container.id} · 长度 ${formatNumber(container.length)} · y ${formatNumber(bounds.minY)} ~ ${formatNumber(bounds.maxY)}`;
+  }
+  if (elements.yzQueryYInput) {
+    elements.yzQueryYInput.min = String(bounds.minY);
+    elements.yzQueryYInput.max = String(bounds.maxY);
+    elements.yzQueryYInput.value = String(queryY);
+  }
+  if (elements.yzQuerySlider) {
+    elements.yzQuerySlider.min = String(bounds.minY);
+    elements.yzQuerySlider.max = String(bounds.maxY);
+    elements.yzQuerySlider.value = String(queryY);
+  }
+  if (elements.yzQueryValue) {
+    elements.yzQueryValue.textContent = `y = ${formatNumber(queryY)}`;
+  }
+  const interval = yzBoundaryAtY(container.cross_section, queryY);
+  if (elements.yzQueryResult) {
+    elements.yzQueryResult.classList.toggle("muted-text", !interval);
+    elements.yzQueryResult.innerHTML = interval
+      ? `z 可用区间：<code>${formatNumber(interval.minZ)} ~ ${formatNumber(interval.maxZ)}</code><br>最高 z 边界：<strong>${formatNumber(interval.maxZ)}</strong>`
+      : "当前 y 不在 ULD 截面范围内";
+  }
+  drawYzProfileQuery();
+}
+
+function drawYzProfileQuery() {
+  if (!elements.yzProfileCanvas?.getContext) {
+    return;
+  }
+  const { context, rect } = setupCanvas(elements.yzProfileCanvas);
+  context.clearRect(0, 0, rect.width, rect.height);
+  const container = getYzQueryContainer();
+  const bounds = container ? yzCrossSectionBounds(container.cross_section) : null;
+  if (!container || !bounds) {
+    return;
+  }
+  const mapper = createPlaneMapper(rect, Math.max(bounds.maxY, 1), Math.max(bounds.maxZ, 1), "y", "z");
+  drawProjectionFrame(context, rect, "y 宽度", "z 高度");
+  drawSectionPolygon(context, mapper, container.cross_section);
+  const queryY = Number.isFinite(state.yzQueryY) ? clamp(state.yzQueryY, bounds.minY, bounds.maxY) : bounds.minY;
+  const interval = yzBoundaryAtY(container.cross_section, queryY);
+  const lineStart = mapper.toScreen(queryY, bounds.minZ);
+  const lineEnd = mapper.toScreen(queryY, bounds.maxZ);
+  context.save();
+  context.strokeStyle = themeCssValue("--yz-query-line", "#facc15");
+  context.lineWidth = 2;
+  context.setLineDash([7, 5]);
+  context.beginPath();
+  context.moveTo(lineStart.x, lineStart.y);
+  context.lineTo(lineEnd.x, lineEnd.y);
+  context.stroke();
+  context.setLineDash([]);
+  if (interval) {
+    const low = mapper.toScreen(queryY, interval.minZ);
+    const high = mapper.toScreen(queryY, interval.maxZ);
+    context.strokeStyle = themeCssValue("--yz-query-range", "#f59e0b");
+    context.lineWidth = 5;
+    context.beginPath();
+    context.moveTo(low.x, low.y);
+    context.lineTo(high.x, high.y);
+    context.stroke();
+    context.fillStyle = themeCssValue("--yz-query-point", "#fef08a");
+    context.beginPath();
+    context.arc(high.x, high.y, 5, 0, Math.PI * 2);
+    context.fill();
+    context.font = "700 12px system-ui, sans-serif";
+    context.fillText(`z=${formatNumber(interval.maxZ)}`, high.x + 8, high.y - 8);
+  }
+  context.restore();
+}
+
+function selectYzQueryAtPointer(event) {
+  const container = getYzQueryContainer();
+  const bounds = container ? yzCrossSectionBounds(container.cross_section) : null;
+  if (!container || !bounds) {
+    return;
+  }
+  const rect = elements.yzProfileCanvas.getBoundingClientRect();
+  const padding = 34;
+  const scale = Math.min(
+    Math.max(1, rect.width - padding * 2) / Math.max(bounds.maxY, 1),
+    Math.max(1, rect.height - padding * 2) / Math.max(bounds.maxZ, 1),
+  );
+  const offsetX = (rect.width - bounds.maxY * scale) / 2;
+  const queryY = (event.clientX - rect.left - offsetX) / scale;
+  setYzQueryY(queryY);
+}
+
 function renderContainerSelector(result) {
   const containers = result.containers ?? [{ container_id: result.uld_id, container_type: result.uld_id, loaded_count: result.loaded_count }];
   elements.containerSelector.innerHTML = containers
@@ -3409,6 +3724,7 @@ function selectContainer(containerId, options = {}) {
   if (state.selectedInstanceId) {
     syncSliceToSelectedPlacement();
   }
+  syncYzQueryToActiveContainer();
   renderActiveContainerDetails();
   drawAllViews();
 }
@@ -3717,6 +4033,7 @@ function updateAnimationControls() {
 function drawAllViews() {
   drawScene();
   drawProjectionViews();
+  drawYzProfileQuery();
 }
 
 function drawScene() {
