@@ -84,7 +84,7 @@ const fallbackInput = {
     },
   ],
   boxes: [],
-  objective: "maximize_volume",
+  objective: "maximize_count",
   search_mode: "balanced",
 };
 
@@ -201,6 +201,7 @@ function cacheElements() {
   elements.importBoxesButton = document.getElementById("importBoxesButton");
   elements.boxTotalCount = document.getElementById("boxTotalCount");
   elements.boxMergeNotice = document.getElementById("boxMergeNotice");
+  elements.objectiveSelect = document.getElementById("objectiveSelect");
   elements.searchModeSelect = document.getElementById("searchModeSelect");
   elements.themeToggleButton = document.getElementById("themeToggleButton");
   elements.calculateButton = document.getElementById("calculateButton");
@@ -381,6 +382,7 @@ function writeInputToForm(input, { mergeSummary = null } = {}) {
   elements.boxTableBody.innerHTML = "";
   normalized.boxes.forEach((box) => addBoxRow(box));
   updateBoxTotalCount();
+  elements.objectiveSelect.value = normalized.objective;
   elements.searchModeSelect.value = normalized.search_mode;
   updateBoxMergeNotice();
   renderYzUldSelector();
@@ -408,7 +410,7 @@ function normalizeInput(input) {
         cross_section: container.cross_section.map(([y, z]) => [Number(y), Number(z)]),
       })),
       boxes: input.boxes ?? [],
-      objective: input.objective ?? "maximize_volume",
+      objective: input.objective ?? "maximize_count",
       search_mode: input.search_mode ?? "balanced",
     };
   }
@@ -423,7 +425,7 @@ function normalizeInput(input) {
         },
       ],
       boxes: input.boxes ?? [],
-      objective: input.objective ?? "maximize_volume",
+      objective: input.objective ?? "maximize_count",
       search_mode: input.search_mode ?? "balanced",
     };
   }
@@ -3251,10 +3253,11 @@ function historyRecordLabel(record) {
   const unloaded = result.unloaded_count ?? 0;
   const util = formatPercent(result.volume_utilization);
   const mode = searchModeLabel(record.input?.search_mode ?? "balanced");
+  const objective = objectiveLabel(record.input?.objective ?? "maximize_count");
   const elapsed = formatHistoryElapsed(record.elapsedSeconds);
   return `
     <span class="history-time">${escapeHtml(time)}</span>
-    <span class="history-mode">${escapeHtml(mode)}</span>
+    <span class="history-mode">${escapeHtml(mode)} · ${escapeHtml(objective)}</span>
     <span class="history-headline">
       <span class="history-stat history-loaded"><em>已装</em><b>${loaded}</b></span>
       <span class="history-stat history-unloaded"><em>未装</em><b>${unloaded}</b></span>
@@ -3287,11 +3290,19 @@ function searchModeLabel(value) {
   return labels[value] ?? labels.balanced;
 }
 
+function objectiveLabel(value) {
+  const labels = {
+    maximize_count: "装箱数量",
+    maximize_volume: "装载体积",
+  };
+  return labels[value] ?? labels.maximize_count;
+}
+
 function readInputFromForm() {
   return {
     containers: readContainersFromForm(),
     boxes: readBoxesFromForm(),
-    objective: "maximize_volume",
+    objective: elements.objectiveSelect.value,
     search_mode: elements.searchModeSelect.value,
   };
 }
@@ -3756,7 +3767,7 @@ function getActiveProfileInput() {
       cross_section: active.cross_section,
     },
     boxes: state.input.boxes,
-    objective: state.input.objective ?? "maximize_volume",
+    objective: state.input.objective ?? "maximize_count",
     search_mode: state.input.search_mode ?? "balanced",
   };
 }

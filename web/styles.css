@@ -392,10 +392,12 @@ select:focus-visible {
 .header-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
-.search-mode-label {
+.header-select-label {
   display: grid;
   grid-template-columns: auto minmax(150px, 1fr);
   gap: 8px;
@@ -406,7 +408,7 @@ select:focus-visible {
   letter-spacing: 0.04em;
 }
 
-.search-mode-label select {
+.header-select-label select {
   height: 40px;
   min-width: 150px;
 }

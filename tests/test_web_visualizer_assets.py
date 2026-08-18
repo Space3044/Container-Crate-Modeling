@@ -28,6 +28,7 @@ class WebVisualizerAssetsTests(unittest.TestCase):
             "importBoxesButton",
             "boxTotalCount",
             "boxMergeNotice",
+            "objectiveSelect",
             "searchModeSelect",
             "activeContainerStats",
             "selectedBoxDetails",
@@ -60,6 +61,9 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("箱子总数", html)
         self.assertIn("清空箱子", html)
         self.assertIn("算法模式", html)
+        self.assertIn("优化目标", html)
+        self.assertIn('value="maximize_count" selected', html)
+        self.assertIn('value="maximize_volume"', html)
         self.assertIn('value="fast"', html)
         self.assertIn('value="balanced"', html)
         self.assertIn('value="high_utilization"', html)
@@ -305,8 +309,13 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("delete document.documentElement.dataset.theme", script)
         self.assertIn('elements.themeToggleButton.setAttribute("aria-pressed", String(dark))', script)
         self.assertIn('drawAllViews()', script)
+        self.assertIn('elements.objectiveSelect = document.getElementById("objectiveSelect")', script)
         self.assertIn('elements.searchModeSelect = document.getElementById("searchModeSelect")', script)
+        self.assertIn("objective: elements.objectiveSelect.value", script)
+        self.assertIn("elements.objectiveSelect.value = normalized.objective", script)
         self.assertIn("search_mode: elements.searchModeSelect.value", script)
+        self.assertIn("function objectiveLabel", script)
+        self.assertIn("record.input?.objective ?? \"maximize_count\"", script)
         self.assertIn("search_mode: input.search_mode ?? \"balanced\"", script)
         self.assertIn("function searchModeLabel", script)
         self.assertIn("record.input?.search_mode ?? \"balanced\"", script)

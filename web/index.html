@@ -22,7 +22,14 @@
     <header class="app-header">
       <h1>Multi ULD Profile Packing</h1>
       <div class="header-actions">
-        <label class="search-mode-label" for="searchModeSelect">
+        <label class="header-select-label" for="objectiveSelect">
+          优化目标
+          <select id="objectiveSelect">
+            <option value="maximize_count" selected>装箱数量</option>
+            <option value="maximize_volume">装载体积</option>
+          </select>
+        </label>
+        <label class="header-select-label" for="searchModeSelect">
           算法模式
           <select id="searchModeSelect">
             <option value="fast">快速模式</option>
