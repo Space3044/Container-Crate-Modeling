@@ -1010,6 +1010,98 @@ fast、balanced 和 high_utilization 保持三套独立搜索，不复用或回�
 `maximize_volume` 按体积、数量、少用 ULD 排序，`maximize_count` 按数量、体积、
 少用 ULD 排序。Beam 中间评分仍保留经现场验证的长期可行性启发式。
 
+## 第二十六版：大规模 balanced 保留高箱路径并统一计算表示
+
+动机：6 月 27 日同一批 214 箱可以全部装入，但近期输入在计算前把 `BOX-G/K/P`
+三个等价箱型归并为 `BOX-G ×29` 后，balanced 的两个目标分别漏装 4 箱和 1 箱。
+这不是归并后的布局非法，而是大规模 Beam 只看前两个箱型候选，先铺矮箱后把截面全高
+带切碎；同时前端归并行为没有和计算输入明确同步，用户看到的箱型表与实际求解表示容易不一致。
+
+做法：
+
+```text
+大规模基础搜索的 box_type_candidates 从 2 提到 3；fast 档仍收窄到 2
+balanced 增加一轮独立的高箱优先确定性排序，保留原有两轮 GRASP
+大规模 high_utilization 的原生 high frontier 用高箱优先轮替换低收益排序轮，原生部分保持三轮
+基础 Beam 为 3/6 的大中规模 high_utilization 将宽度倍率从 1.6 提到 3.4，分别保留 10/20 个主状态
+不复用 fast/high_utilization 的结果，也不启用 high_utilization 的局部重排或支撑率
+归并后的箱型在求解器内部按几何键确定性排序，不再受输入行首次出现顺序影响
+删除按 `_merge_source_count` 切换 Beam 评分的条件，归并前后统一使用同一评分公式
+体积目标的 Beam 中间评分改为体积、数量优先；数量目标保留少开 ULD 的长期可行性启发式
+balanced 独立重算 fast 参数 frontier；high 独立重算 balanced/fast 参数 frontiers，使搜索候选集合按档位严格包含
+balanced/high 同时重算相反 objective 的多样性 frontiers，最终仍按用户选择的 objective 统一择优
+前端计算前自动切换到归并后的计算箱型表，请求、结果和历史记录统一使用每组第一行 ID
+```
+
+对应测试：
+
+```text
+test_balanced_large_history_case_keeps_all_boxes_for_both_objectives
+test_equivalent_row_split_and_order_do_not_change_high_volume_result
+test_high_beam_keeps_better_volume_path_when_extra_candidates_expand
+test_volume_objective_prefers_more_volume_over_more_boxes_in_all_modes
+test_round_plans_independently_include_lower_budget_frontiers
+```
+
+效果：
+
+```text
+历史 22 个 ULD / 214 箱输入：balanced + maximize_count 从 210 提升到 214 箱
+同一输入：balanced + maximize_volume 从 213 提升到 214 箱
+同一输入：high_utilization 的两个目标均保持 214 箱、0 未装
+归并后的 24 行和拆分的 26 行输入均为 214 箱、0 未装，体积 264257689
+中型等价行拆分/重排场景恢复为 fast 44、balanced 45、high_utilization 47 箱
+随机多 ULD 反例中 high_utilization 从 38 箱 / 4062715 提升到 39 箱 / 4344675，超过 balanced 的 38 箱 / 4235895
+既有 Q5 局部重排场景仍装 41 箱并保留顶层旋转和 7 箱分块布局，等数量下体积从 51793820 提升到 52014140
+精确一维装箱反例中，体积目标从错误的 7 箱 / 31800 修正为最优的 6 箱 / 32100，三档一致
+100 组一维精确对照：数量目标命中最优 fast 47%、balanced 68%、high 78%；体积目标为 57%、73%、85%
+Q5 高度带用例的体积目标从 67 箱 / 77109220 调整为 66 箱 / 77431884，按用户目标增加体积 322664
+随机反例中 high 体积从 2634568 恢复到 balanced 的 2852968；balanced 体积从 3878002 恢复到 fast 的 3985524
+真实 214 箱输入的体积目标通过相反目标 frontier 找回全装路径，同时保留体积优先的最终选择规则
+三种模式仍各自独立搜索，前端计算表、结果和历史记录只显示归并后的箱型
+```
+
+## 第二十七版：超大规模自适应预算与几何热点复用
+
+动机：常规回归和 214 箱历史数据均正常后，继续把规模提高到 22 个 ULD、
+1,010 箱和 30 个 ULD、1,698 箱时，原实现出现新的复杂度问题。balanced 会把
+10 条完整 frontier 全部跑完；主搜索对同一个容器布局反复构建碰撞扫描索引；收尾救援
+还会枚举“所有未装箱型 × 所有 ULD”。XXL fast 因此单次耗时达到 257 秒。
+
+处理方式：
+
+```text
+超大档条件：总箱数至少 500，且 ULD 至少 12 个或归并后箱型至少 20 种
+fast / balanced / high 继续使用独立搜索参数，不读取其它模式已经算出的结果
+balanced 保留原目标、高箱优先、fast 参数和相反目标 4 条代表性 frontier
+high 保留两条原生 high、两条 balanced、一条 fast 和一条相反目标 balanced frontier
+超大基础预算限制为 Beam 2、80 步、每批最多 40 箱；balanced Beam 下限仍为 4
+high 使用 Beam 7、120 步，单 ULD 空闲空间上限限制为 60
+活跃 ULD 先按紧凑度和低占用度分批试放；不足候选数量时继续扫描下一批，避免直接漏解
+收尾救援覆盖全部代表箱型，但每种箱型只检查最有希望的 ULD
+救援 ULD 预算：fast 3、balanced 6、high 8；fast 只取优先级最高的 6 个箱型
+high 的超大规模局部重排只处理利用率最低的一个 ULD，避免逐 ULD 全量重算
+同一 ContainerState 复用碰撞/支撑扫描索引，箱型朝向和 ProfilePackingInput 使用静态缓存
+```
+
+214 箱历史数据不会进入超大档，原有两个目标全装结果保持不变。超大档仍是有界启发式，
+时间和质量形成明确梯度，high 在 1,700 箱规模属于离线计算而非交互式秒级计算。
+
+压力测试结果：
+
+```text
+XL：22 ULD / 44 行来源箱型 / 1,010 箱
+maximize_count：fast 287 / 4.1s，balanced 307 / 57.8s，high 320 / 130.1s
+maximize_volume：fast 239673397 / 3.9s，balanced 248050574 / 67.1s，high 248698497 / 161.1s
+
+XXL：30 ULD / 61 行来源箱型 / 1,698 箱
+maximize_count：fast 569 / 5.8s，balanced 594 / 213.8s，high 651 / 601.1s
+maximize_volume：fast 315692802 / 8.1s，balanced 333821777 / 250.3s，high 340223331 / 583.6s
+```
+
+两组均遍历六种模式/目标组合，并检查合法性、数量守恒、placement 数量、实例 ID 唯一性
+以及同一目标下的模式评分不倒挂。完整单元回归由此前约 298 秒降到约 95 秒。
+
 ## 当前算法总结
 
 当前完整策略可以概括为：
@@ -1029,7 +1121,8 @@ fast、balanced 和 high_utilization 保持三套独立搜索，不复用或回�
 + 收尾定向腾挪：救回静态可装却被挤掉的强约束箱型
 + 堆叠方向优先选择主要支撑面更完整的摆放
 + 三种搜索模式，在速度和装载率之间切换
-+ 三种模式独立搜索；balanced 大规模 Beam 下限为 4，并执行两轮 GRASP
++ 三种模式独立搜索；balanced 大规模 Beam 下限为 4，保留高箱确定性路径并执行两轮 GRASP
++ 500 箱以上且 ULD/箱型较多时启用超大规模代表 frontier、分批 ULD 候选和分模式救援预算
 + GRASP 随机化重启：balanced 与 high 档多轮取最优，种子固定可复现
 + 高装载率模式下逐个评估所有已用 ULD 的顶层重排收益，并对最差两 ULD 联合重装
 + 高装载率模式下 multistart 多 box 排序变体取最优（含高箱优先变体）
@@ -1056,6 +1149,7 @@ Beam Search 只保留有限数量的中间方案
 截面多边形仅支持凸多边形（边界规约确认的范围）
 复杂场景仍可能错过更优组合
 CP-SAT 当前最多处理 16 箱、单个目标 ULD，且支撑关系采用单主支撑面的保守子集
+1,700 箱级 high_utilization 仍可能需要约 10 分钟，应作为离线高质量计算使用
 ```
 
 ## 下一步优化方向

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from itertools import permutations
 import multiprocessing
 import random
@@ -56,6 +57,18 @@ MAX_PARALLEL_SEARCH_PROCESSES = 3
 BEAM_DIVERSITY_QUOTA_DIVISOR = 3
 PROFILE_BEAM_TOP_SCORE_QUOTA_DIVISOR = 3
 CP_SAT_LOCAL_CONTAINER_CANDIDATES = 1
+FAST_COMPATIBLE_VARIANT_OFFSET = 10
+BALANCED_COMPATIBLE_VARIANT_OFFSET = 20
+ALTERNATE_OBJECTIVE_VARIANT_OFFSET = 100
+EXTRA_LARGE_TOTAL_BOXES = 500
+EXTRA_LARGE_CONTAINER_COUNT = 12
+EXTRA_LARGE_BOX_TYPE_COUNT = 20
+EXTRA_LARGE_RESCUE_BOX_TYPES = 6
+EXTRA_LARGE_RESCUE_CONTAINERS = 3
+EXTRA_LARGE_RESCUE_BOX_TYPES_BALANCED = 48
+EXTRA_LARGE_RESCUE_CONTAINERS_BALANCED = 6
+EXTRA_LARGE_RESCUE_BOX_TYPES_HIGH = 64
+EXTRA_LARGE_RESCUE_CONTAINERS_HIGH = 8
 
 
 @dataclass(frozen=True)
@@ -92,6 +105,7 @@ class ContainerState:
     max_x: float = -1.0
     max_y: float = -1.0
     max_z: float = -1.0
+    scan_index: PlacementScanIndex | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.container_volume < 0:
@@ -100,6 +114,11 @@ class ContainerState:
             self.used_volume = sum(placement.volume for placement in self.placements)
         if self.max_x < 0 or self.max_y < 0 or self.max_z < 0:
             self.max_x, self.max_y, self.max_z = _bounding_extents(self.placements)
+
+    def get_scan_index(self) -> PlacementScanIndex:
+        if self.scan_index is None:
+            self.scan_index = _placement_scan_index(self.placements)
+        return self.scan_index
 
 
 @dataclass
@@ -396,23 +415,103 @@ def _normalize_problem_boxes(
     problem: ProfilePackingInput | MultiContainerPackingInput,
 ) -> ProfilePackingInput | MultiContainerPackingInput:
     """确保直接调用求解器时也遵守计算前箱型归并规则。"""
-    return replace(problem, boxes=merge_box_specs(problem.boxes))
+    # 归并组的第一行 ID 仍按用户输入保留，但内部搜索按几何键排序，
+    # 避免等价箱型仅因输入行顺序变化而走不同的 Beam 路径。
+    return replace(problem, boxes=merge_box_specs(problem.boxes, sort_by_key=True))
 
 
 def _round_plan(problem: MultiContainerPackingInput) -> list[tuple[int, int | None]]:
     """每轮 = (box 排序变体, GRASP 种子)。种子为 None 表示确定性轮。"""
+    if _is_extra_large_problem(problem):
+        return _extra_large_round_plan(problem)
+
+    balanced_rounds = [(0, None), (4, None)] + [
+        (0, seed) for seed in range(1, GRASP_ROUNDS_BALANCED + 1)
+    ]
     if problem.search_mode == SEARCH_MODE_HIGH_UTILIZATION:
         container_count = sum(container.quantity for container in problem.containers)
         box_type_count = len(problem.boxes)
         if container_count >= 12 or box_type_count >= 20:
             # 大规模时每轮要几十秒，缩轮数保住分钟级预算
-            return [(0, None), (1, None), (0, 1)]
-        deterministic = [(variant, None) for variant in MULTISTART_VARIANTS]
-        randomized = [(seed % len(MULTISTART_VARIANTS), seed) for seed in range(1, GRASP_ROUNDS_HIGH_UTILIZATION + 1)]
-        return deterministic + randomized
+            native_rounds = [(0, None), (4, None), (0, 1)]
+        else:
+            deterministic = [(variant, None) for variant in MULTISTART_VARIANTS]
+            randomized = [
+                (seed % len(MULTISTART_VARIANTS), seed)
+                for seed in range(1, GRASP_ROUNDS_HIGH_UTILIZATION + 1)
+            ]
+            native_rounds = deterministic + randomized
+        # high 独立重算较保守的 frontier，使搜索集合严格包含 balanced/fast。
+        # 编码后的 variant 会在 _pack_multi_profile_round 中还原排序变体和参数档。
+        balanced_compatible = [
+            (BALANCED_COMPATIBLE_VARIANT_OFFSET + variant, seed)
+            for variant, seed in balanced_rounds
+        ]
+        selected_objective_rounds = [
+            *native_rounds,
+            *balanced_compatible,
+            (FAST_COMPATIBLE_VARIANT_OFFSET, None),
+        ]
+        return _with_alternate_objective_rounds(selected_objective_rounds)
     if problem.search_mode == SEARCH_MODE_BALANCED:
-        return [(0, None)] + [(0, seed) for seed in range(1, GRASP_ROUNDS_BALANCED + 1)]
+        # 大规模数据需要一条高箱优先的确定性路径，避免先铺满矮箱层后把
+        # 截面全高带切碎。它与两轮 GRASP 同属 balanced 自己的搜索组合，
+        # 不读取 fast/high_utilization 的结果。
+        selected_objective_rounds = [
+            *balanced_rounds,
+            (FAST_COMPATIBLE_VARIANT_OFFSET, None),
+        ]
+        return _with_alternate_objective_rounds(selected_objective_rounds)
     return [(0, None)]
+
+
+def _extra_large_round_plan(problem: MultiContainerPackingInput) -> list[tuple[int, int | None]]:
+    """超大输入只保留代表性确定性 frontier，避免重复搜索随规模失控。"""
+    if problem.search_mode == SEARCH_MODE_FAST:
+        return [(0, None)]
+
+    if problem.search_mode == SEARCH_MODE_BALANCED:
+        return [
+            (0, None),
+            (4, None),
+            (FAST_COMPATIBLE_VARIANT_OFFSET, None),
+            (ALTERNATE_OBJECTIVE_VARIANT_OFFSET, None),
+        ]
+
+    # 包含与超大 balanced 完全对应的两条原目标路径、fast 路径和相反目标路径，
+    # 再增加 high 自己的两条更宽路径。这里只重算 frontier，不复用其它模式结果。
+    return [
+        (0, None),
+        (4, None),
+        (BALANCED_COMPATIBLE_VARIANT_OFFSET, None),
+        (BALANCED_COMPATIBLE_VARIANT_OFFSET + 4, None),
+        (FAST_COMPATIBLE_VARIANT_OFFSET, None),
+        (ALTERNATE_OBJECTIVE_VARIANT_OFFSET + BALANCED_COMPATIBLE_VARIANT_OFFSET, None),
+    ]
+
+
+def _with_alternate_objective_rounds(
+    rounds: list[tuple[int, int | None]],
+) -> list[tuple[int, int | None]]:
+    """追加相反目标的独立 frontier，最终仍由用户选择的目标统一择优。"""
+    return [
+        *rounds,
+        *[
+            (ALTERNATE_OBJECTIVE_VARIANT_OFFSET + variant, seed)
+            for variant, seed in rounds
+        ],
+    ]
+
+
+def _is_extra_large_problem(problem: MultiContainerPackingInput) -> bool:
+    total_quantity = sum(box.quantity for box in problem.boxes)
+    if total_quantity < EXTRA_LARGE_TOTAL_BOXES:
+        return False
+    container_count = sum(container.quantity for container in problem.containers)
+    return (
+        container_count >= EXTRA_LARGE_CONTAINER_COUNT
+        or len(problem.boxes) >= EXTRA_LARGE_BOX_TYPE_COUNT
+    )
 
 
 def _best_of_rounds(
@@ -451,6 +550,20 @@ def _pack_multi_profile_round(
     variant: int,
     seed: int | None,
 ) -> MultiContainerPackingResult:
+    if variant >= ALTERNATE_OBJECTIVE_VARIANT_OFFSET:
+        alternate_objective = (
+            "maximize_volume"
+            if problem.objective == "maximize_count"
+            else "maximize_count"
+        )
+        problem = replace(problem, objective=alternate_objective)
+        variant -= ALTERNATE_OBJECTIVE_VARIANT_OFFSET
+    if variant >= BALANCED_COMPATIBLE_VARIANT_OFFSET:
+        problem = replace(problem, search_mode=SEARCH_MODE_BALANCED)
+        variant -= BALANCED_COMPATIBLE_VARIANT_OFFSET
+    elif variant >= FAST_COMPATIBLE_VARIANT_OFFSET:
+        problem = replace(problem, search_mode=SEARCH_MODE_FAST)
+        variant -= FAST_COMPATIBLE_VARIANT_OFFSET
     rng = random.Random(seed) if seed is not None else None
     return _pack_multi_profile_variant(problem, variant=variant, rng=rng)
 
@@ -558,6 +671,10 @@ def _initial_global_state(problem: MultiContainerPackingInput) -> GlobalPackingS
 
 def _global_search_limits(problem: MultiContainerPackingInput) -> SearchLimits:
     limits = _search_limits_for_mode(_base_global_search_limits(problem), problem.search_mode)
+    if _is_extra_large_problem(problem) and problem.search_mode == SEARCH_MODE_HIGH_UTILIZATION:
+        # high 的通用档会把空闲空间上限至少扩到 240；在数十个 ULD 上会让每次
+        # 放置候选扫描成倍放大。超大档仍比 balanced 更宽，但限制单容器碎片数。
+        return replace(limits, max_free_spaces=min(limits.max_free_spaces, 60))
     if problem.search_mode == SEARCH_MODE_BALANCED:
         # 大规模档的基础 beam=3 容易让新增的短期高分分支挤掉长期可行路径。
         # 4 个主 frontier 配合两轮 GRASP，仍保持秒级预算且不依赖 fast 结果。
@@ -569,10 +686,23 @@ def _base_global_search_limits(problem: MultiContainerPackingInput) -> SearchLim
     total_quantity = sum(box.quantity for box in problem.boxes)
     container_count = sum(container.quantity for container in problem.containers)
     box_type_count = len(problem.boxes)
+    if _is_extra_large_problem(problem):
+        return SearchLimits(
+            beam_width=2,
+            box_type_candidates=2,
+            container_candidates=2,
+            placement_branches=1,
+            global_branches_per_state=4,
+            batch_placements=40,
+            max_steps=80,
+            max_free_spaces=30,
+        )
     if container_count >= 12 or box_type_count >= 20:
         return SearchLimits(
             beam_width=3,
-            box_type_candidates=2,
+            # 第三个候选箱型是大规模场景中恢复长期可行路径的最低预算；
+            # fast 档仍会按 _search_limits_for_mode 收窄回 2 个。
+            box_type_candidates=3,
             container_candidates=2,
             placement_branches=1,
             global_branches_per_state=8,
@@ -636,8 +766,12 @@ def _search_limits_for_mode(limits: SearchLimits, search_mode: str) -> SearchLim
             max_free_spaces=min(limits.max_free_spaces, max(40, limits.max_free_spaces // 2)),
         )
     if search_mode == SEARCH_MODE_HIGH_UTILIZATION:
+        # 大中规模基础 Beam 只有 3/6。high 同时扩大箱型、容器和放置分支后，
+        # 1.6 倍宽度不足以容纳新增状态，反而可能挤掉 balanced 的长期路径。
+        # 基础 Beam 已达 30 的小规模场景继续使用原倍率，避免状态数无谓爆炸。
+        beam_multiplier = 3.4 if limits.beam_width <= 6 else 1.6
         return SearchLimits(
-            beam_width=max(limits.beam_width + 1, round(limits.beam_width * 1.6)),
+            beam_width=max(limits.beam_width + 1, round(limits.beam_width * beam_multiplier)),
             box_type_candidates=max(limits.box_type_candidates + 1, round(limits.box_type_candidates * 1.5)),
             container_candidates=max(limits.container_candidates + 1, round(limits.container_candidates * 1.5)),
             placement_branches=max(limits.placement_branches + 1, round(limits.placement_branches * 1.5)),
@@ -734,7 +868,17 @@ def _container_candidate_options(
         and _box_can_fit_container(box, container.spec)
         and _container_remaining_volume(container) >= box.volume
     ]
-    active_options = _container_options_from_pool(problem, active_pool, box, instance_id, limits, rng=rng)
+    if _is_extra_large_problem(problem):
+        active_options = _bounded_active_container_options(
+            problem,
+            active_pool,
+            box,
+            instance_id,
+            limits,
+            rng,
+        )
+    else:
+        active_options = _container_options_from_pool(problem, active_pool, box, instance_id, limits, rng=rng)
     if active_options:
         return _sort_container_options(active_options, limits)
     if active_only:
@@ -745,6 +889,49 @@ def _container_candidate_options(
         _container_options_from_pool(problem, container_pool, box, instance_id, limits, rng=rng),
         limits,
     )
+
+
+def _bounded_active_container_options(
+    problem: MultiContainerPackingInput,
+    active_pool: list[tuple[int, ContainerState]],
+    box: BoxSpec,
+    instance_id: str,
+    limits: SearchLimits,
+    rng: random.Random | None,
+) -> list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]]:
+    """分批试放活跃 ULD，达到候选预算后停止昂贵的几何扫描。"""
+    if len(active_pool) <= limits.container_candidates * 2:
+        return _container_options_from_pool(problem, active_pool, box, instance_id, limits, rng=rng)
+
+    compact_first = sorted(
+        active_pool,
+        key=lambda item: _container_pool_score(item[1], box),
+        reverse=True,
+    )
+    least_used_first = sorted(active_pool, key=lambda item: (item[1].used_volume, item[0]))
+    prioritized = _unique_container_options(
+        [
+            *compact_first[: limits.container_candidates],
+            *least_used_first[: limits.container_candidates],
+            *compact_first,
+        ]
+    )
+    chunk_size = max(1, limits.container_candidates * 2)
+    options: list[tuple[int, ContainerState, ProfilePackingInput, list[BoxPlacement]]] = []
+    for start in range(0, len(prioritized), chunk_size):
+        options.extend(
+            _container_options_from_pool(
+                problem,
+                prioritized[start : start + chunk_size],
+                box,
+                instance_id,
+                limits,
+                rng=rng,
+            )
+        )
+        if len(options) >= limits.container_candidates:
+            break
+    return options
 
 
 def _container_options_from_pool(
@@ -764,6 +951,7 @@ def _container_options_from_pool(
             profile_input,
             container_state.placements,
             container_state.free_spaces,
+            scan_index=container_state.get_scan_index(),
         )
         if rng is not None:
             # 只扰动头部：截断后只用前几个候选，整条列表重排是 O(n^2) 纯浪费
@@ -955,6 +1143,7 @@ def _repeat_box_in_container(
             profile_input,
             container_state.placements,
             container_state.free_spaces,
+            scan_index=container_state.get_scan_index(),
         )
         if not candidates:
             break
@@ -1599,11 +1788,34 @@ def _rescue_unloaded_boxes(
     """
     current_state = state
     current_score = _global_state_score(problem, current_state)
-    for box_id in sorted(current_state.remaining_counter):
+    rescue_box_ids = sorted(current_state.remaining_counter)
+    if _is_extra_large_problem(problem):
+        rescue_box_limit, _ = _extra_large_rescue_limits(problem.search_mode)
+        rescue_box_ids = [
+            box.id
+            for box in sorted(
+                (
+                    box_by_id[box_id]
+                    for box_id in rescue_box_ids
+                    if current_state.remaining_counter[box_id] > 0
+                ),
+                key=lambda box: _extra_large_rescue_box_score(problem, current_state, box),
+                reverse=True,
+            )[:rescue_box_limit]
+        ]
+    for box_id in rescue_box_ids:
         if current_state.remaining_counter[box_id] <= 0:
             continue
         box = box_by_id[box_id]
-        for container_index, container in enumerate(current_state.containers):
+        indexed_containers = list(enumerate(current_state.containers))
+        if _is_extra_large_problem(problem):
+            _, rescue_container_limit = _extra_large_rescue_limits(problem.search_mode)
+            indexed_containers = _extra_large_rescue_container_candidates(
+                box,
+                indexed_containers,
+                rescue_container_limit,
+            )
+        for container_index, container in indexed_containers:
             if not _box_allowed_in_container(box, container):
                 continue
             if not _box_can_fit_container(box, container.spec):
@@ -1617,6 +1829,52 @@ def _rescue_unloaded_boxes(
                 current_score = candidate_score
                 break
     return current_state
+
+
+def _extra_large_rescue_box_score(
+    problem: MultiContainerPackingInput,
+    state: GlobalPackingState,
+    box: BoxSpec,
+) -> tuple[float, ...]:
+    fit_count = sum(
+        1
+        for container in state.containers
+        if _box_allowed_in_container(box, container) and _box_can_fit_container(box, container.spec)
+    )
+    required_priority = 1 if box.required_container_types else 0
+    remaining = state.remaining_counter[box.id]
+    if problem.objective == "maximize_count":
+        return (required_priority, -fit_count, remaining, -box.volume)
+    return (required_priority, -fit_count, box.volume, remaining)
+
+
+def _extra_large_rescue_limits(search_mode: str) -> tuple[int, int]:
+    if search_mode == SEARCH_MODE_HIGH_UTILIZATION:
+        return (EXTRA_LARGE_RESCUE_BOX_TYPES_HIGH, EXTRA_LARGE_RESCUE_CONTAINERS_HIGH)
+    if search_mode == SEARCH_MODE_BALANCED:
+        return (EXTRA_LARGE_RESCUE_BOX_TYPES_BALANCED, EXTRA_LARGE_RESCUE_CONTAINERS_BALANCED)
+    return (EXTRA_LARGE_RESCUE_BOX_TYPES, EXTRA_LARGE_RESCUE_CONTAINERS)
+
+
+def _extra_large_rescue_container_candidates(
+    box: BoxSpec,
+    indexed_containers: list[tuple[int, ContainerState]],
+    limit: int,
+) -> list[tuple[int, ContainerState]]:
+    candidates = [
+        (index, container)
+        for index, container in indexed_containers
+        if container.placements
+        and _box_allowed_in_container(box, container)
+        and _box_can_fit_container(box, container.spec)
+    ]
+    return sorted(
+        candidates,
+        key=lambda item: (
+            item[1].used_volume / item[1].container_volume if item[1].container_volume else 0,
+            item[0],
+        ),
+    )[:limit]
 
 
 def _rescue_box_into_container(
@@ -1697,6 +1955,7 @@ def _seed_box_in_container(
         profile_input,
         container_state.placements,
         container_state.free_spaces,
+        scan_index=container_state.get_scan_index(),
     )
     if not candidates:
         return None
@@ -1720,6 +1979,14 @@ def _local_rearrange_state(
     if problem.search_mode != SEARCH_MODE_HIGH_UTILIZATION:
         return state
     if not any(container.placements for container in state.containers):
+        return state
+    if _is_extra_large_problem(problem):
+        target_indices = _worst_container_indices(state, 1, skip_indices=set())
+        if not target_indices:
+            return state
+        candidate = _ruin_and_recreate(problem, state, box_by_id, limits, target_indices)
+        if _global_state_score(problem, candidate) > _global_state_score(problem, state):
+            return candidate
         return state
 
     best_state = state
@@ -2108,6 +2375,7 @@ def _best_refill_option(
             profile_input,
             container_state.placements,
             container_state.free_spaces,
+            scan_index=container_state.get_scan_index(),
         )
         if candidates:
             options.append((container_index, container_state, profile_input, candidates[0]))
@@ -2222,8 +2490,6 @@ def _global_state_score(problem: MultiContainerPackingInput, state: GlobalPackin
     used_volume = sum(container.used_volume for container in state.containers)
     loaded_count = sum(len(container.placements) for container in state.containers)
     unloaded_count = sum(quantity for quantity in state.remaining_counter.values() if quantity > 0)
-    remaining_volume = sum(state.remaining_counter[box.id] * box.volume for box in problem.boxes)
-    has_merged_box_rows = any(box._merge_source_count > 1 for box in problem.boxes)
     required_unloaded_count = _required_unloaded_count_from_state(problem, state)
     compactness = sum(_container_bounding_volume(container) for container in state.containers)
     used_container_count = _used_container_count(state.containers)
@@ -2234,17 +2500,16 @@ def _global_state_score(problem: MultiContainerPackingInput, state: GlobalPackin
             -unloaded_count,
             -used_container_count,
             loaded_count,
-            *((-remaining_volume,) if has_merged_box_rows else ()),
             used_volume,
             active_container_utilization,
             -compactness,
         )
     return (
         -required_unloaded_count,
-        *((-remaining_volume, -unloaded_count) if has_merged_box_rows else (-unloaded_count,)),
-        -used_container_count,
         used_volume,
         loaded_count,
+        -unloaded_count,
+        -used_container_count,
         active_container_utilization,
         -compactness,
     )
@@ -2382,15 +2647,34 @@ def _required_container_validation_errors(
 
 
 def _profile_input_for_container(problem: MultiContainerPackingInput, container_state: ContainerState) -> ProfilePackingInput:
+    return _cached_profile_input_for_container(
+        container_state.container_id,
+        container_state.spec.length,
+        tuple(container_state.spec.cross_section),
+        tuple(problem.boxes),
+        problem.objective,
+        problem.search_mode,
+    )
+
+
+@lru_cache(maxsize=4096)
+def _cached_profile_input_for_container(
+    container_id: str,
+    length: float,
+    cross_section: tuple[tuple[float, float], ...],
+    boxes: tuple[BoxSpec, ...],
+    objective: str,
+    search_mode: str,
+) -> ProfilePackingInput:
     return ProfilePackingInput(
         uld=ULDProfile(
-            id=container_state.container_id,
-            length=container_state.spec.length,
-            cross_section=container_state.spec.cross_section,
+            id=container_id,
+            length=length,
+            cross_section=list(cross_section),
         ),
-        boxes=problem.boxes,
-        objective=problem.objective,
-        search_mode=problem.search_mode,
+        boxes=list(boxes),
+        objective=objective,
+        search_mode=search_mode,
     )
 
 
@@ -2507,11 +2791,12 @@ def _placement_candidates(
     problem: ProfilePackingInput,
     placements: list[BoxPlacement],
     free_spaces: list[FreeSpace],
+    scan_index: PlacementScanIndex | None = None,
 ) -> list[BoxPlacement]:
     candidates: list[tuple[BoxPlacement, PlacementScore]] = []
     seen: set[tuple[float, float, float, float, float, float]] = set()
     current_extents = _bounding_extents(placements)
-    scan_index = _placement_scan_index(placements)
+    scan_index = scan_index or _placement_scan_index(placements)
     max_y = max(y for y, _ in problem.uld.cross_section)
     max_z = max(z for _, z in problem.uld.cross_section)
     for space in free_spaces:
@@ -2748,6 +3033,7 @@ def _ranges_overlap(first_start: float, first_end: float, second_start: float, s
     return first_start < second_end and first_end > second_start
 
 
+@lru_cache(maxsize=4096)
 def _orientation_options(box: BoxSpec) -> list[tuple[float, float, float]]:
     """箱子可选的 (x 长, y 宽, z 高) 朝向。
 

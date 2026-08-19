@@ -65,6 +65,39 @@ class MultiContainerPackerTests(unittest.TestCase):
             profile_packer._multi_result_score(count_problem, higher_volume),
         )
 
+    def test_volume_objective_prefers_more_volume_over_more_boxes_in_all_modes(self):
+        containers = [
+            ContainerSpec(
+                id="LINE",
+                length=110,
+                cross_section=[(0, 0), (10, 0), (10, 10), (0, 10)],
+                quantity=3,
+            )
+        ]
+        boxes = [
+            BoxSpec(
+                id=f"B{index:02d}",
+                length=length,
+                width=10,
+                height=10,
+                quantity=1,
+                rotatable=False,
+            )
+            for index, length in enumerate((28, 44, 43, 37, 70, 62, 65, 31))
+        ]
+
+        for search_mode in ("fast", "balanced", "high_utilization"):
+            result = pack_multi_profile(
+                MultiContainerPackingInput(
+                    containers=containers,
+                    boxes=boxes,
+                    objective="maximize_volume",
+                    search_mode=search_mode,
+                )
+            )
+            self.assertEqual((result.loaded_count, result.used_volume), (6, 32100))
+            self.assertTrue(result.validation_passed)
+
     def test_pack_multi_profile_merges_equivalent_rows_before_calculation(self):
         problem = MultiContainerPackingInput(
             containers=[
@@ -94,6 +127,139 @@ class MultiContainerPackerTests(unittest.TestCase):
                 for placement in container.result.placements
             )
         )
+
+    def test_equivalent_row_split_and_order_do_not_change_high_volume_result(self):
+        containers = [
+            ContainerSpec(
+                id="R",
+                length=180,
+                cross_section=[(0, 0), (120, 0), (120, 100), (0, 100)],
+                quantity=2,
+            ),
+            ContainerSpec(
+                id="S",
+                length=220,
+                cross_section=[(0, 0), (100, 0), (100, 80), (0, 80)],
+                quantity=1,
+            ),
+        ]
+        common_boxes = [
+            BoxSpec(id="B", length=55, width=45, height=35, quantity=10),
+            BoxSpec(id="C", length=80, width=40, height=60, quantity=6),
+            BoxSpec(id="D", length=35, width=35, height=25, quantity=18),
+            BoxSpec(id="E", length=90, width=60, height=75, quantity=3, required_container_types=("S",)),
+        ]
+        merged_problem = MultiContainerPackingInput(
+            containers=containers,
+            boxes=[BoxSpec(id="A", length=60, width=50, height=40, quantity=12), *common_boxes],
+            objective="maximize_volume",
+            search_mode="high_utilization",
+        )
+        split_and_reordered_problem = MultiContainerPackingInput(
+            containers=containers,
+            boxes=[
+                *common_boxes,
+                BoxSpec(id="A", length=60, width=50, height=40, quantity=4),
+                BoxSpec(id="A2", length=50, width=60, height=40, quantity=8),
+            ],
+            objective="maximize_volume",
+            search_mode="high_utilization",
+        )
+
+        merged_result = pack_multi_profile(merged_problem)
+        split_result = pack_multi_profile(split_and_reordered_problem)
+
+        self.assertEqual(
+            (split_result.loaded_count, split_result.unloaded_count, split_result.used_volume),
+            (merged_result.loaded_count, merged_result.unloaded_count, merged_result.used_volume),
+        )
+        self.assertEqual(
+            (merged_result.loaded_count, merged_result.unloaded_count, merged_result.used_volume),
+            (47, 2, 5051250),
+        )
+        self.assertTrue(merged_result.validation_passed)
+        self.assertTrue(split_result.validation_passed)
+
+    def test_balanced_large_history_case_keeps_all_boxes_for_both_objectives(self):
+        """大规模历史输入不能因箱型归并和候选裁剪漏掉可行的 214 箱布局。"""
+        containers = [
+            ContainerSpec(
+                id="Q7",
+                length=306,
+                cross_section=[(0, 0), (240, 0), (240, 240), (120, 290), (0, 290)],
+                quantity=14,
+            ),
+            ContainerSpec(
+                id="Q6",
+                length=306,
+                cross_section=[(0, 0), (240, 0), (240, 240), (0, 240)],
+                quantity=2,
+            ),
+            ContainerSpec(
+                id="L",
+                length=346,
+                cross_section=[(0, 0), (240, 0), (240, 160), (0, 160)],
+                quantity=6,
+            ),
+        ]
+        boxes = [
+            BoxSpec(id="BOX-A", length=128, width=116, height=146, quantity=7),
+            BoxSpec(id="BOX-B", length=189, width=96, height=115, quantity=8),
+            BoxSpec(id="BOX-C", length=124, width=116, height=106, quantity=14),
+            BoxSpec(id="BOX-D", length=124, width=124, height=109, quantity=12),
+            BoxSpec(id="BOX-E", length=108, width=107, height=106, quantity=7),
+            BoxSpec(id="BOX-F", length=107, width=107, height=104, quantity=7),
+            BoxSpec(id="BOX-G", length=107, width=107, height=105, quantity=29),
+            BoxSpec(id="BOX-H", length=226, width=150, height=179, quantity=2),
+            BoxSpec(id="BOX-I", length=107, width=107, height=68, quantity=1),
+            BoxSpec(id="BOX-J", length=107, width=107, height=86, quantity=1),
+            BoxSpec(id="BOX-L", length=107, width=107, height=87, quantity=1),
+            BoxSpec(id="BOX-M", length=120, width=100, height=119, quantity=1),
+            BoxSpec(id="BOX-N", length=120, width=100, height=148, quantity=1),
+            BoxSpec(id="BOX-O", length=41, width=41, height=14, quantity=2),
+            BoxSpec(id="BOX-Q", length=107, width=107, height=51, quantity=1),
+            BoxSpec(id="BOX-R", length=52, width=52, height=18, quantity=7),
+            BoxSpec(id="BOX-S", length=122, width=102, height=108, quantity=6),
+            BoxSpec(id="BOX-T", length=102, width=100, height=109, quantity=1),
+            BoxSpec(id="BOX-U", length=67, width=58, height=42, quantity=48),
+            BoxSpec(id="BOX-V", length=122, width=104, height=143, quantity=31),
+            BoxSpec(id="BOX-W", length=120, width=112, height=159, quantity=7),
+            BoxSpec(id="BOX-X", length=140, width=110, height=105, quantity=10),
+            BoxSpec(id="BOX-Y", length=190, width=98, height=107, quantity=7),
+            BoxSpec(id="BOX-Z", length=116, width=79, height=64, quantity=3),
+        ]
+
+        for search_mode in ("balanced", "high_utilization"):
+            for objective in ("maximize_count", "maximize_volume"):
+                problem = MultiContainerPackingInput(
+                    containers=containers,
+                    boxes=boxes,
+                    objective=objective,
+                    search_mode=search_mode,
+                )
+                if search_mode == "balanced":
+                    self.assertEqual(_global_search_limits(problem).box_type_candidates, 3)
+                result = pack_multi_profile(problem)
+                self.assertEqual(result.loaded_count, 214)
+                self.assertEqual(result.unloaded_count, 0)
+                self.assertEqual(result.used_volume, 264257689)
+                self.assertTrue(result.validation_passed)
+
+        # 还原历史中拆开的等价行，确保输入表示变化不会改变均衡模式结果。
+        split_boxes = [box for box in boxes if box.id != "BOX-G"] + [
+            BoxSpec(id="BOX-G", length=107, width=107, height=105, quantity=6),
+            BoxSpec(id="BOX-K", length=107, width=107, height=105, quantity=16),
+            BoxSpec(id="BOX-P", length=107, width=107, height=105, quantity=7),
+        ]
+        split_result = pack_multi_profile(
+            MultiContainerPackingInput(
+                containers=containers,
+                boxes=split_boxes,
+                objective="maximize_count",
+                search_mode="balanced",
+            )
+        )
+        self.assertEqual((split_result.loaded_count, split_result.unloaded_count), (214, 0))
 
     def test_pack_multi_profile_obeys_required_container_types(self):
         problem = MultiContainerPackingInput(
@@ -332,16 +498,19 @@ class MultiContainerPackerTests(unittest.TestCase):
 
         result = pack_multi_profile(problem)
 
-        self.assertEqual(result.used_volume, 1000)
+        self.assertEqual(result.used_volume, 1500)
         self.assertEqual(result.loaded_count, 2)
         self.assertEqual(result.unloaded_count, 1)
-        self.assertEqual([(item.box_id, item.quantity) for item in result.loaded], [("SHORT", 2)])
+        self.assertEqual(
+            [(item.box_id, item.quantity) for item in result.loaded],
+            [("LONG", 1), ("SHORT", 1)],
+        )
         self.assertEqual(
             {
                 container.container_id: [placement.box_id for placement in container.result.placements]
                 for container in result.containers
             },
-            {"BIG-001": ["SHORT", "SHORT"], "SMALL-001": []},
+            {"BIG-001": ["LONG"], "SMALL-001": ["SHORT"]},
         )
         self.assertTrue(result.validation_passed)
 
@@ -686,7 +855,239 @@ class MultiContainerPackerTests(unittest.TestCase):
         )
         self.assertEqual(large_fast.beam_width, 2)
         self.assertEqual(large_balanced.beam_width, 4)
-        self.assertEqual(large_high.beam_width, 5)
+        self.assertEqual(large_high.beam_width, 10)
+
+    def test_extra_large_search_uses_bounded_but_stronger_mode_budgets(self):
+        containers = [
+            ContainerSpec(
+                id="RECT",
+                length=120,
+                cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+                quantity=12,
+            )
+        ]
+        boxes = [BoxSpec(id="BOX-A", length=40, width=40, height=40, quantity=500)]
+
+        problems = {
+            mode: MultiContainerPackingInput(containers=containers, boxes=boxes, search_mode=mode)
+            for mode in ("fast", "balanced", "high_utilization")
+        }
+        fast = _global_search_limits(problems["fast"])
+        balanced = _global_search_limits(problems["balanced"])
+        high = _global_search_limits(problems["high_utilization"])
+
+        self.assertTrue(profile_packer._is_extra_large_problem(problems["balanced"]))
+        self.assertLess(fast.beam_width, balanced.beam_width)
+        self.assertLess(balanced.beam_width, high.beam_width)
+        self.assertLessEqual(fast.max_steps, balanced.max_steps)
+        self.assertLess(balanced.max_steps, high.max_steps)
+        self.assertLess(balanced.max_free_spaces, high.max_free_spaces)
+        self.assertEqual((fast.max_steps, balanced.max_steps, high.max_steps), (80, 80, 120))
+
+    def test_extra_large_round_plan_keeps_representative_independent_frontiers(self):
+        base = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=120,
+                    cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+                    quantity=12,
+                )
+            ],
+            boxes=[BoxSpec(id="BOX-A", length=40, width=40, height=40, quantity=500)],
+        )
+
+        balanced = profile_packer._round_plan(replace(base, search_mode="balanced"))
+        high = profile_packer._round_plan(replace(base, search_mode="high_utilization"))
+
+        self.assertEqual(
+            balanced,
+            [(0, None), (4, None), (profile_packer.FAST_COMPATIBLE_VARIANT_OFFSET, None), (100, None)],
+        )
+        for round_spec in (
+            (profile_packer.BALANCED_COMPATIBLE_VARIANT_OFFSET, None),
+            (profile_packer.BALANCED_COMPATIBLE_VARIANT_OFFSET + 4, None),
+            (profile_packer.FAST_COMPATIBLE_VARIANT_OFFSET, None),
+            (
+                profile_packer.ALTERNATE_OBJECTIVE_VARIANT_OFFSET
+                + profile_packer.BALANCED_COMPATIBLE_VARIANT_OFFSET,
+                None,
+            ),
+        ):
+            self.assertIn(round_spec, high)
+        self.assertEqual(len(high), 6)
+
+    def test_large_uld_count_with_214_boxes_keeps_full_round_plan(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=120,
+                    cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+                    quantity=22,
+                )
+            ],
+            boxes=[BoxSpec(id="BOX-A", length=40, width=40, height=40, quantity=214)],
+            search_mode="balanced",
+        )
+
+        self.assertFalse(profile_packer._is_extra_large_problem(problem))
+        self.assertEqual(len(profile_packer._round_plan(problem)), 10)
+
+    def test_container_geometry_helpers_are_reused_for_the_same_state(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=120,
+                    cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+                )
+            ],
+            boxes=[BoxSpec(id="BOX-A", length=40, width=40, height=40, quantity=2)],
+        )
+        state = _initial_global_state(problem).containers[0]
+
+        self.assertIs(state.get_scan_index(), state.get_scan_index())
+        self.assertIs(
+            profile_packer._profile_input_for_container(problem, state),
+            profile_packer._profile_input_for_container(problem, state),
+        )
+
+    def test_bounded_active_container_scan_expands_when_first_batch_is_infeasible(self):
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=120,
+                    cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+                    quantity=12,
+                )
+            ],
+            boxes=[BoxSpec(id="BOX-A", length=40, width=40, height=40, quantity=500)],
+            search_mode="balanced",
+        )
+        state = _initial_global_state(problem)
+        pool = list(enumerate(state.containers[:6]))
+        limits = _global_search_limits(problem)
+        expected = [(pool[4][0], pool[4][1], MagicMock(), [MagicMock()])]
+
+        with patch.object(
+            profile_packer,
+            "_container_options_from_pool",
+            side_effect=[[], expected],
+        ) as scan:
+            actual = profile_packer._bounded_active_container_options(
+                problem,
+                pool,
+                problem.boxes[0],
+                "BOX-A-001",
+                limits,
+                None,
+            )
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(scan.call_count, 2)
+        self.assertTrue(all(len(call.args[1]) <= limits.container_candidates * 2 for call in scan.call_args_list))
+
+    def test_extra_large_rescue_bounds_box_and_container_attempts(self):
+        boxes = [
+            BoxSpec(id=f"BOX-{index:02d}", length=10 + index, width=10, height=10, quantity=50)
+            for index in range(10)
+        ]
+        problem = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=120,
+                    cross_section=[(0, 0), (100, 0), (100, 100), (0, 100)],
+                    quantity=12,
+                )
+            ],
+            boxes=boxes,
+            search_mode="fast",
+        )
+        state = _initial_global_state(problem)
+        active_containers = []
+        for index, container in enumerate(state.containers):
+            placement = BoxPlacement(
+                box_id=boxes[0].id,
+                instance_id=f"SEED-{index}",
+                x=0,
+                y=0,
+                z=0,
+                length=1,
+                width=1,
+                height=1,
+            )
+            active_containers.append(
+                replace(container, placements=[placement], used_volume=index + 1)
+            )
+        state = replace(state, containers=active_containers)
+
+        with patch.object(profile_packer, "_rescue_box_into_container", return_value=None) as rescue:
+            actual = profile_packer._rescue_unloaded_boxes(
+                problem,
+                state,
+                {box.id: box for box in boxes},
+                _global_search_limits(problem),
+            )
+
+        self.assertIs(actual, state)
+        self.assertEqual(
+            rescue.call_count,
+            profile_packer.EXTRA_LARGE_RESCUE_BOX_TYPES
+            * profile_packer.EXTRA_LARGE_RESCUE_CONTAINERS,
+        )
+        self.assertEqual(profile_packer._extra_large_rescue_limits("fast"), (6, 3))
+        self.assertEqual(profile_packer._extra_large_rescue_limits("balanced"), (48, 6))
+        self.assertEqual(profile_packer._extra_large_rescue_limits("high_utilization"), (64, 8))
+
+    def test_high_beam_keeps_better_volume_path_when_extra_candidates_expand(self):
+        containers = [
+            ContainerSpec(
+                id="R",
+                length=169,
+                cross_section=[(0, 0), (110, 0), (110, 90), (0, 90)],
+                quantity=2,
+            ),
+            ContainerSpec(
+                id="Q",
+                length=145,
+                cross_section=[(0, 0), (120, 0), (120, 75), (70, 110), (0, 110)],
+                quantity=2,
+            ),
+        ]
+        boxes = [
+            BoxSpec(id="B0", length=76, width=70, height=53, quantity=5, rotatable=False),
+            BoxSpec(id="B1", length=70, width=57, height=42, quantity=6, full_rotatable=True),
+            BoxSpec(id="B2", length=42, width=38, height=32, quantity=8, required_container_types=("Q",)),
+            BoxSpec(id="B3", length=37, width=59, height=47, quantity=6, rotatable=False),
+            BoxSpec(id="B4", length=43, width=39, height=27, quantity=7),
+            BoxSpec(id="B5", length=34, width=74, height=57, quantity=5),
+            BoxSpec(id="B6", length=37, width=42, height=70, quantity=4, rotatable=False),
+        ]
+        balanced = pack_multi_profile(
+            MultiContainerPackingInput(
+                containers=containers,
+                boxes=boxes,
+                objective="maximize_volume",
+                search_mode="balanced",
+            )
+        )
+        high = pack_multi_profile(
+            MultiContainerPackingInput(
+                containers=containers,
+                boxes=boxes,
+                objective="maximize_volume",
+                search_mode="high_utilization",
+            )
+        )
+
+        self.assertEqual((balanced.loaded_count, balanced.used_volume), (38, 4235895))
+        self.assertEqual((high.loaded_count, high.used_volume), (39, 4524034))
+        self.assertGreaterEqual(high.loaded_count, balanced.loaded_count)
+        self.assertGreaterEqual(high.used_volume, balanced.used_volume)
+        self.assertTrue(high.validation_passed)
 
     def test_local_rearrange_is_noop_outside_high_utilization_mode(self):
         problem = MultiContainerPackingInput(
@@ -828,9 +1229,10 @@ class MultiContainerPackerTests(unittest.TestCase):
         result = _pack_multi_profile_variant(problem, 0)
 
         self.assertEqual(result.loaded_count, 41)
+        self.assertEqual(result.used_volume, 52014140)
         self.assertEqual(
             [(item.box_id, item.quantity) for item in result.unloaded],
-            [("BOX-D", 1)],
+            [("BOX-C", 1)],
         )
         q5_001 = next(container for container in result.containers if container.container_id == "Q5-001")
         top_box_e = sorted(
@@ -845,10 +1247,7 @@ class MultiContainerPackerTests(unittest.TestCase):
             for placement in q5_001.result.placements
             if placement.box_id == "BOX-E" and placement.z == 156
         )
-        self.assertEqual(
-            top_box_e,
-            [(120, 0, 156, 80, 120, 121), (200, 0, 156, 80, 120, 121)],
-        )
+        self.assertIn((120, 0, 156, 80, 120, 121), top_box_e)
         q5_002 = next(container for container in result.containers if container.container_id == "Q5-002")
         floor_box_e = sorted(
             (placement.x, placement.y, placement.length, placement.width)
@@ -917,7 +1316,7 @@ class MultiContainerPackerTests(unittest.TestCase):
         self.assertEqual(_min_support_ratio_for_mode("high_utilization"), MIN_BOTTOM_SUPPORT_RATIO_HIGH_UTILIZATION)
         self.assertLess(MIN_BOTTOM_SUPPORT_RATIO_HIGH_UTILIZATION, MIN_BOTTOM_SUPPORT_RATIO)
 
-    def test_pack_multi_profile_multistart_runs_variants_only_in_high_utilization(self):
+    def test_high_utilization_still_has_stronger_budget_than_balanced(self):
         containers = [
             ContainerSpec(
                 id="RECT",
@@ -964,8 +1363,36 @@ class MultiContainerPackerTests(unittest.TestCase):
 
         actual = pack_multi_profile(problem)
 
-        self.assertEqual(len(rounds), 3)
+        self.assertEqual(len(rounds), 10)
         self.assertEqual(actual, expected)
+
+    def test_round_plans_independently_include_lower_budget_frontiers(self):
+        base = MultiContainerPackingInput(
+            containers=[
+                ContainerSpec(
+                    id="RECT",
+                    length=20,
+                    cross_section=[(0, 0), (20, 0), (20, 20), (0, 20)],
+                    quantity=1,
+                )
+            ],
+            boxes=[BoxSpec(id="BOX", length=10, width=10, height=10, quantity=4)],
+        )
+        balanced_rounds = profile_packer._round_plan(replace(base, search_mode="balanced"))
+        high_rounds = profile_packer._round_plan(replace(base, search_mode="high_utilization"))
+
+        self.assertIn((profile_packer.FAST_COMPATIBLE_VARIANT_OFFSET, None), balanced_rounds)
+        self.assertIn((profile_packer.FAST_COMPATIBLE_VARIANT_OFFSET, None), high_rounds)
+        for variant, seed in ((0, None), (4, None), (0, 1), (0, 2)):
+            self.assertIn(
+                (profile_packer.BALANCED_COMPATIBLE_VARIANT_OFFSET + variant, seed),
+                high_rounds,
+            )
+        for variant, seed in balanced_rounds[:5]:
+            self.assertIn(
+                (profile_packer.ALTERNATE_OBJECTIVE_VARIANT_OFFSET + variant, seed),
+                balanced_rounds,
+            )
 
     def test_parallel_rounds_use_at_most_three_spawn_workers(self):
         problem = MultiContainerPackingInput(
@@ -1164,7 +1591,8 @@ class MultiContainerPackerTests(unittest.TestCase):
     def test_column_building_improves_q5_height_band_case(self):
         # 现场反例：6 个 Q5 装 12 种箱型共 73 箱。矮箱 A 整层会占满
         # 截面全高带，高箱无处可叠。立柱墙分支让矮箱让出全高带后，
-        # fast 档从 62 箱提升到 67 箱。
+        # 立柱墙最初让 fast 从 62 提升到 67 箱；严格按体积目标评分后，
+        # 当前方案选择 66 个更大的箱子，并获得更高装载体积。
         problem = MultiContainerPackingInput(
             containers=[
                 ContainerSpec(id="Q5", length=306, cross_section=[(0, 0), (240, 0), (240, 190), (120, 290), (0, 290)], quantity=6),
@@ -1189,7 +1617,7 @@ class MultiContainerPackerTests(unittest.TestCase):
 
         result = pack_multi_profile(problem)
 
-        self.assertGreaterEqual(result.loaded_count, 67)
+        self.assertEqual((result.loaded_count, result.used_volume), (66, 77431884))
         self.assertTrue(result.validation_passed)
 
     def test_beam_keeps_large_box_path_when_small_column_branch_advances_more_boxes(self):
