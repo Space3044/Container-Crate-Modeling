@@ -325,6 +325,8 @@ class WebVisualizerAssetsTests(unittest.TestCase):
         self.assertIn("await loadPersistedHistoryRecords()", script)
         self.assertIn("await addHistoryRecord(input, data.result, elapsedSeconds)", script)
         self.assertIn("async function addHistoryRecord", script)
+        self.assertIn("input.boxes = mergeSummary.boxes", script)
+        self.assertIn("writeInputToForm(input, { mergeSummary })", script)
         self.assertIn("localStorage", script)
         self.assertIn("state.historyRecords", script)
         self.assertIn('selectPlacement(row.dataset.instanceId, { syncSlice: true, focusSameBoxType: true })', script)

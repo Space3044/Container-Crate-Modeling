@@ -75,7 +75,6 @@ class BoxSpec:
     rotatable: bool = True
     full_rotatable: bool = False
     required_container_types: tuple[str, ...] = field(default_factory=tuple)
-    _merge_source_count: int = field(default=1, init=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _non_empty(self.id, "box.id")
@@ -96,13 +95,14 @@ class BoxSpec:
         return self.length * self.width * self.height
 
 
-def merge_box_specs(boxes: list[BoxSpec]) -> list[BoxSpec]:
+def merge_box_specs(boxes: list[BoxSpec], *, sort_by_key: bool = False) -> list[BoxSpec]:
     """按实际装箱属性合并箱型，并保留每组第一行的 ID。
 
     长宽可互换的箱子，其长宽顺序不影响可选朝向，因此也视为同一箱型。
     长宽高可互换的箱子，三个尺寸的顺序都不影响可选朝向，按三维排序后比较。
     ULD 限制按集合比较，列表顺序和重复项不影响业务含义。合并只改变数量，
     使用第一条记录的其它字段，确保输出仍然使用用户输入的第一行 ID。
+    sort_by_key 只用于求解器内部，保证输入行顺序不改变搜索顺序。
     """
     merged: dict[tuple[object, ...], BoxSpec] = {}
     for box in boxes:
@@ -121,13 +121,11 @@ def merge_box_specs(boxes: list[BoxSpec]) -> list[BoxSpec]:
             full_rotatable=first.full_rotatable,
             required_container_types=first.required_container_types,
         )
-        object.__setattr__(
-            merged_box,
-            "_merge_source_count",
-            first._merge_source_count + box._merge_source_count,
-        )
         merged[key] = merged_box
-    return list(merged.values())
+    result = list(merged.values())
+    if sort_by_key:
+        result.sort(key=_box_merge_key)
+    return result
 
 
 def _box_merge_key(box: BoxSpec) -> tuple[object, ...]:

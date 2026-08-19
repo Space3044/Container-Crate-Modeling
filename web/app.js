@@ -611,9 +611,9 @@ function updateBoxMergeNotice() {
   if (summary) {
     if (summary.mergedRowCount > 0) {
       stateValue = "merged";
-      heading = applied ? "本次计算已归并" : "检测到可归并箱型";
+      heading = applied ? "本次计算按归并箱型求解" : "检测到可归并箱型";
       message = applied
-        ? `已将 ${summary.sourceRowCount} 行归并为 ${summary.mergedTypeCount} 个计算箱型，数量已相加，保留每组第一行 ID。`
+        ? `已将 ${summary.sourceRowCount} 行归并为 ${summary.mergedTypeCount} 个计算箱型，数量已相加，结果保留每组第一行 ID。`
         : `当前 ${summary.sourceRowCount} 行中有 ${summary.mergedRowCount} 行可归并，计算时会按 ${summary.mergedTypeCount} 个箱型处理。`;
     } else {
       message = `当前 ${summary.sourceRowCount} 行均为独立计算箱型；若存在相同箱型，计算时会自动合并。`;
@@ -3080,6 +3080,7 @@ async function calculatePacking(options = {}) {
     const mergeSummary = mergeBoxesForPacking(input.boxes);
     input.boxes = mergeSummary.boxes;
     if (mergeSummary.mergedRowCount > 0) {
+      // 计算前直接切换到实际参与求解的箱型表，避免输入表和结果中的 ID 不一致。
       writeInputToForm(input, { mergeSummary });
     } else {
       state.boxMergeSummary = null;
@@ -3229,13 +3230,18 @@ function selectHistoryRecord(recordId) {
   }
   stopPackingAnimation();
   state.selectedHistoryId = record.id;
-  state.input = normalizeInput(structuredClone(record.input));
+  const recordInput = normalizeInput(structuredClone(record.input));
+  const mergeSummary = mergeBoxesForPacking(recordInput.boxes);
+  state.input = {
+    ...recordInput,
+    boxes: mergeSummary.boxes,
+  };
   state.result = normalizeResultHeightSwapFlags(structuredClone(record.result), state.input);
   state.selectedContainerId = null;
   state.selectedInstanceId = null;
   state.hoveredInstanceId = null;
   state.focusedBoxId = null;
-  writeInputToForm(state.input);
+  writeInputToForm(state.input, { mergeSummary: mergeSummary.mergedRowCount > 0 ? mergeSummary : null });
   clearError();
   resetAnimationState({ showFull: true });
   hideSceneTooltip();
