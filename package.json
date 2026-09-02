@@ -1,0 +1,14 @@
+{
+  "name": "container-crate-modeling-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:web": "esbuild web/three-viewer-entry.js --bundle --format=iife --global-name=ThreeViewerModule --outfile=web/three-viewer.bundle.js --minify"
+  },
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

@@ -95,19 +95,21 @@ const MAX_HISTORY_RECORDS = 10;
 const HISTORY_STORAGE_KEY = "uld-packing-history";
 const THEME_STORAGE_KEY = "uld-packing-theme";
 const BULK_BOX_EXAMPLE = "140*105*94*20\n40.5*40.5*14*1";
+const EMPTY_PLACEMENTS = [];
+// 中饱和度亮色工程色板：清晰明亮但不刺眼，适合长时间观看
 const BOX_COLOR_PALETTE = [
-  { r: 14, g: 165, b: 233 },
-  { r: 245, g: 158, b: 11 },
-  { r: 168, g: 85, b: 247 },
-  { r: 16, g: 185, b: 129 },
-  { r: 244, g: 63, b: 94 },
-  { r: 99, g: 102, b: 241 },
-  { r: 20, g: 184, b: 166 },
-  { r: 249, g: 115, b: 22 },
-  { r: 217, g: 70, b: 239 },
-  { r: 132, g: 204, b: 22 },
-  { r: 236, g: 72, b: 153 },
-  { r: 59, g: 130, b: 246 },
+  { r: 255, g: 138, b: 128 },  // 浅珊瑚红
+  { r: 129, g: 212, b: 250 },  // 浅天蓝
+  { r: 174, g: 234, b: 134 },  // 浅草绿
+  { r: 255, g: 183, b: 77 },   // 浅橙
+  { r: 206, g: 147, b: 216 },  // 浅紫
+  { r: 255, g: 171, b: 145 },  // 浅橙粉
+  { r: 128, g: 222, b: 234 },  // 浅青
+  { r: 230, g: 238, b: 156 },  // 浅黄绿
+  { r: 240, g: 98, b: 146 },   // 浅玫红
+  { r: 179, g: 157, b: 219 },  // 浅薰衣草紫
+  { r: 165, g: 214, b: 167 },  // 浅薄荷绿
+  { r: 144, g: 202, b: 249 },  // 浅钴蓝
 ];
 const EXCEL_COLOR_PALETTE = [
   "FFE0F2FE",
@@ -134,6 +136,8 @@ const CRC32_TABLE = buildCrc32Table();
 const state = {
   input: structuredClone(fallbackInput),
   result: null,
+  threeViewer: null,
+  sceneDisplayMode: "visible",
   selectedContainerId: null,
   selectedInstanceId: null,
   selectedHistoryId: null,
@@ -182,6 +186,7 @@ document.addEventListener("DOMContentLoaded", init);
 async function init() {
   cacheElements();
   initializeTheme();
+  initializeThreeViewer();
   bindEvents();
   state.historyRecords = await loadPersistedHistoryRecords();
   renderHistoryRecords();
@@ -242,6 +247,27 @@ function cacheElements() {
   elements.topViewCanvas = document.getElementById("topViewCanvas");
   elements.sideViewCanvas = document.getElementById("sideViewCanvas");
   elements.sectionViewCanvas = document.getElementById("sectionViewCanvas");
+  elements.allBoxesDisplayButton = document.getElementById("allBoxesDisplayButton");
+  elements.visibleBoxesDisplayButton = document.getElementById("visibleBoxesDisplayButton");
+}
+
+function initializeThreeViewer() {
+  if (!elements.canvas || typeof window.ThreeSceneViewer !== "function") {
+    return;
+  }
+  try {
+    state.threeViewer = new window.ThreeSceneViewer({
+      canvas: elements.canvas,
+      getBoxColor: (placement) => rgbColorToHex(colorForBox(placement.box_id)),
+      onHover: handleThreeViewerHover,
+      onSelect: handleThreeViewerSelect,
+      onViewChange: updateCameraViewControls,
+    });
+    elements.sceneStage.classList.add("three-mode");
+  } catch {
+    state.threeViewer = null;
+  }
+  updateSceneDisplayModeControls();
 }
 
 function bindEvents() {
@@ -286,6 +312,12 @@ function bindEvents() {
   elements.topViewButton.addEventListener("click", () => setCameraView("top"));
   elements.sideViewButton.addEventListener("click", () => setCameraView("side"));
   elements.sectionViewButton.addEventListener("click", () => setCameraView("section"));
+  if (elements.allBoxesDisplayButton) {
+    elements.allBoxesDisplayButton.addEventListener("click", () => setSceneDisplayMode("all"));
+  }
+  if (elements.visibleBoxesDisplayButton) {
+    elements.visibleBoxesDisplayButton.addEventListener("click", () => setSceneDisplayMode("visible"));
+  }
   elements.animationPlayButton.addEventListener("click", togglePackingAnimation);
   elements.animationResetButton.addEventListener("click", resetPackingAnimation);
   elements.animationSpeedSlider.addEventListener("input", () => setAnimationSpeed(elements.animationSpeedSlider.value));
@@ -295,20 +327,22 @@ function bindEvents() {
     drawAllViews();
   });
 
-  elements.canvas.addEventListener("pointerdown", startPointerDrag);
-  elements.canvas.addEventListener("pointermove", movePointerDrag);
-  elements.canvas.addEventListener("pointerup", endPointerDrag);
-  elements.canvas.addEventListener("pointerleave", (event) => {
-    endPointerDrag(event);
-    clearHoveredScenePlacement();
-  });
-  elements.canvas.addEventListener("click", selectScenePlacementAtPointer);
-  elements.canvas.addEventListener("dblclick", () => {
-    resetView();
-    drawAllViews();
-  });
-  elements.canvas.addEventListener("wheel", zoomScene, { passive: false });
-  elements.canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+  if (!state.threeViewer) {
+    elements.canvas.addEventListener("pointerdown", startPointerDrag);
+    elements.canvas.addEventListener("pointermove", movePointerDrag);
+    elements.canvas.addEventListener("pointerup", endPointerDrag);
+    elements.canvas.addEventListener("pointerleave", (event) => {
+      endPointerDrag(event);
+      clearHoveredScenePlacement();
+    });
+    elements.canvas.addEventListener("click", selectScenePlacementAtPointer);
+    elements.canvas.addEventListener("dblclick", () => {
+      resetView();
+      drawAllViews();
+    });
+    elements.canvas.addEventListener("wheel", zoomScene, { passive: false });
+    elements.canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+  }
 
   elements.topViewCanvas.addEventListener("click", (event) => focusProjectionCameraView(event, "top"));
   elements.sideViewCanvas.addEventListener("click", (event) => focusProjectionCameraView(event, "side"));
@@ -4054,6 +4088,11 @@ function drawAllViews() {
 }
 
 function drawScene() {
+  if (state.threeViewer) {
+    drawThreeScene();
+    return;
+  }
+
   const { canvas, context, rect } = setupCanvas(elements.canvas);
   state.hitRegions.scene = [];
   context.clearRect(0, 0, rect.width, rect.height);
@@ -4081,6 +4120,74 @@ function drawScene() {
   drawPrismEdges(context, activeInput, projector);
   drawAxes(context, projector, dimensions);
   drawBackgroundText(context, rect);
+}
+
+function drawThreeScene() {
+  state.hitRegions.scene = [];
+  const activeInput = getActiveProfileInput();
+  if (!activeInput || !state.threeViewer) {
+    state.threeViewer?.clearScene();
+    updateSceneDisplayModeControls();
+    return;
+  }
+
+  const activeResult = getActiveResult();
+  const placements = activeResult?.placements ?? EMPTY_PLACEMENTS;
+  const visiblePlacements = activeResult ? visibleScenePlacements(activeResult) : EMPTY_PLACEMENTS;
+  const latestAnimatedId = currentAnimatedInstanceId(visiblePlacements);
+  state.threeViewer.resize();
+  state.threeViewer.setScene({
+    input: activeInput,
+    placements,
+    visiblePlacements,
+    selectedInstanceId: state.selectedInstanceId,
+    hoveredInstanceId: state.hoveredInstanceId,
+    latestAnimatedId,
+    displayMode: state.sceneDisplayMode,
+  });
+  updateSceneDisplayModeControls();
+}
+
+function handleThreeViewerHover(placement, event) {
+  const nextInstanceId = placement?.instance_id ?? null;
+  const changed = state.hoveredInstanceId !== nextInstanceId;
+  state.hoveredInstanceId = nextInstanceId;
+  if (placement) {
+    renderSceneTooltip(event, placement);
+  } else {
+    hideSceneTooltip();
+  }
+  if (changed) {
+    drawScene();
+  }
+}
+
+function handleThreeViewerSelect(placement) {
+  if (placement?.instance_id) {
+    selectPlacement(placement.instance_id, { syncSlice: true });
+  }
+}
+
+function setSceneDisplayMode(mode) {
+  state.sceneDisplayMode = mode === "visible" ? "visible" : "all";
+  updateSceneDisplayModeControls();
+  drawScene();
+}
+
+function updateSceneDisplayModeControls() {
+  const buttons = [elements.allBoxesDisplayButton, elements.visibleBoxesDisplayButton].filter(Boolean);
+  const enabled = Boolean(state.threeViewer);
+  buttons.forEach((button) => {
+    const mode = button === elements.visibleBoxesDisplayButton ? "visible" : "all";
+    button.disabled = !enabled;
+    button.setAttribute("aria-pressed", String(state.sceneDisplayMode === mode));
+  });
+}
+
+function updateCameraViewControls(view = "isometric") {
+  document.querySelectorAll("[data-camera-view]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.cameraView === view));
+  });
 }
 
 function drawProjectionViews() {
@@ -4706,10 +4813,17 @@ function drawPolyline(context, points, projector) {
 
 function colorForBox(id) {
   let hash = 0;
-  for (const char of id) {
+  for (const char of String(id ?? "")) {
     hash = (hash * 31 + char.charCodeAt(0)) % 9973;
   }
   return BOX_COLOR_PALETTE[hash % BOX_COLOR_PALETTE.length];
+}
+
+function rgbColorToHex(color) {
+  const red = clamp(Math.round(Number(color?.r) || 0), 0, 255);
+  const green = clamp(Math.round(Number(color?.g) || 0), 0, 255);
+  const blue = clamp(Math.round(Number(color?.b) || 0), 0, 255);
+  return (red << 16) | (green << 8) | blue;
 }
 
 function lightenColor(color, ratio) {
@@ -4928,11 +5042,16 @@ function setCameraView(view) {
     side: { yaw: 0, pitch: 0 },
     section: { yaw: -1.5708, pitch: 0 },
   };
-  const next = views[view] ?? views.isometric;
+  const viewKey = views[view] ? view : "isometric";
+  const next = views[viewKey];
   state.camera.yaw = next.yaw;
   state.camera.pitch = next.pitch;
   state.camera.panX = 0;
   state.camera.panY = 10;
+  updateCameraViewControls(viewKey);
+  if (state.threeViewer) {
+    state.threeViewer.setView(viewKey);
+  }
   drawAllViews();
 }
 
@@ -4993,6 +5112,10 @@ function resetView() {
   state.camera.zoom = 1;
   state.camera.panX = 0;
   state.camera.panY = 10;
+  updateCameraViewControls("isometric");
+  if (state.threeViewer) {
+    state.threeViewer.resetView();
+  }
 }
 
 function setBusy(isBusy) {

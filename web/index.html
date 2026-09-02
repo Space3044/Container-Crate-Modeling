@@ -16,6 +16,7 @@
       })();
     </script>
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/three-viewer.bundle.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -148,15 +149,20 @@
           <div class="viewer-copy">
             <span class="panel-kicker">Visualization</span>
             <h2 id="viewer-title">最优解 3D 视图</h2>
-            <p>鼠标左键拖动旋转，滚轮缩放，Shift 拖动平移，双击重置视角。</p>
+            <p>左键旋转，右键平移，滚轮缩放，双击重置视角。切换“仅显示可见”可使用实体深度遮挡。</p>
           </div>
           <div class="viewer-tools">
             <div class="viewer-actions" aria-label="视角切换">
-              <button id="isometricViewButton" type="button" class="secondary-button small-button">等轴</button>
-              <button id="topViewButton" type="button" class="secondary-button small-button">俯视</button>
-              <button id="sideViewButton" type="button" class="secondary-button small-button">侧视</button>
-              <button id="sectionViewButton" type="button" class="secondary-button small-button">截面</button>
+              <button id="isometricViewButton" type="button" class="secondary-button small-button" data-camera-view="isometric" aria-pressed="true">等轴</button>
+              <button id="topViewButton" type="button" class="secondary-button small-button" data-camera-view="top" aria-pressed="false">俯视</button>
+              <button id="sideViewButton" type="button" class="secondary-button small-button" data-camera-view="side" aria-pressed="false">侧视</button>
+              <button id="sectionViewButton" type="button" class="secondary-button small-button" data-camera-view="section" aria-pressed="false">截面</button>
               <button id="resetViewButton" type="button" class="secondary-button small-button">重置</button>
+            </div>
+            <div class="display-mode-controls" aria-label="箱子显示模式">
+              <span class="display-mode-label">3D 显示</span>
+              <button id="visibleBoxesDisplayButton" type="button" class="secondary-button small-button" aria-pressed="true">仅显示可见</button>
+              <button id="allBoxesDisplayButton" type="button" class="secondary-button small-button" aria-pressed="false">全部箱子</button>
             </div>
             <div class="animation-controls" aria-label="装箱动画">
               <span class="animation-label">装箱动画</span>
@@ -177,6 +183,12 @@
         <div class="viewer-body">
           <div class="scene-stage">
             <canvas id="sceneCanvas" aria-label="ULD 装箱三维可视化画布"></canvas>
+            <div class="three-axis-legend" aria-label="坐标轴说明">
+              <span class="three-axis-legend-title">世界坐标</span>
+              <span class="three-axis-legend-item axis-x"><i aria-hidden="true"></i>x 长度</span>
+              <span class="three-axis-legend-item axis-y"><i aria-hidden="true"></i>y 宽度</span>
+              <span class="three-axis-legend-item axis-z"><i aria-hidden="true"></i>z 高度</span>
+            </div>
             <div id="sceneTooltip" class="scene-tooltip" role="status" aria-label="悬停箱子信息"></div>
           </div>
           <div class="projection-grid" aria-label="二维投影视图">
