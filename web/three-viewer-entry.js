@@ -1,7 +1,14 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 
 const ALL_BOXES_OPACITY = 0.78;
+const SELECTED_OUTLINE_COLOR = 0xef4444;
+const HOVERED_OUTLINE_COLOR = 0xf87171;
+const ANIMATED_EMISSIVE_COLOR = 0xef4444;
+const HIGHLIGHT_LINE_WIDTH = 3.2;
 const SHELL_COLOR = 0x64b5f6;
 const SHELL_EDGE_COLOR = 0x1976d2;
 const GRID_COLOR = 0x78909c;
@@ -95,8 +102,16 @@ class ThreeSceneViewer {
   bindEvents() {
     this.handlePointerDown = (event) => {
       this.pointerDown = { x: event.clientX, y: event.clientY };
+      this.hoveredInstanceId = null;
+      this.onHover(null, event);
     };
     this.handlePointerMove = (event) => {
+      // OrbitControls uses this gesture to rotate/pan. Do not run picking while
+      // the pointer is held down, otherwise the rotating scene can trigger hover
+      // highlights and tooltips as the ray moves across different boxes.
+      if (this.pointerDown) {
+        return;
+      }
       const hit = this.pick(event);
       const placement = hit?.userData?.placement ?? null;
       this.hoveredInstanceId = placement?.instance_id ?? null;
@@ -109,6 +124,8 @@ class ThreeSceneViewer {
       const distance = Math.hypot(event.clientX - this.pointerDown.x, event.clientY - this.pointerDown.y);
       this.pointerDown = null;
       if (distance > 5) {
+        this.hoveredInstanceId = null;
+        this.onHover(null, event);
         return;
       }
       const hit = this.pick(event);
@@ -387,7 +404,7 @@ class ThreeSceneViewer {
       edgeObject.material.opacity = isHighlighted ? 1.0 : (visibleOnly ? 0.85 : 0.7);
       edgeObject.material.needsUpdate = true;
 
-      // 确保发光外边框始终保持发光效果
+      // 高亮轮廓始终置于最上层，完整框出箱体的前后边线。
       [mesh.userData.hoverOutline, mesh.userData.selectOutline].forEach((outline) => {
         if (outline) {
           outline.traverse((child) => {
@@ -402,15 +419,38 @@ class ThreeSceneViewer {
     });
   }
 
+  createHighlightOutline(geometry, color, opacity = 1) {
+    const material = new LineMaterial({
+      color,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      depthTest: false,
+      linewidth: HIGHLIGHT_LINE_WIDTH,
+      worldUnits: false,
+    });
+    const edgeGeometry = new THREE.EdgesGeometry(geometry);
+    const wideGeometry = new LineSegmentsGeometry().setPositions(
+      Array.from(edgeGeometry.getAttribute("position").array),
+    );
+    edgeGeometry.dispose();
+    const outline = new LineSegments2(wideGeometry, material);
+    outline.renderOrder = 100;
+    outline.scale.setScalar(1.018);
+    return outline;
+  }
+
   updateHighlights() {
     this.boxMeshes.forEach((mesh) => {
       const placement = mesh.userData.placement;
-      const kind = placement.instance_id === this.selectedInstanceId
-        ? "selected"
-        : placement.instance_id === this.hoveredInstanceId
-          ? "hovered"
-          : placement.instance_id === this.animatedInstanceId
-            ? "animated"
+      const kind = this.animatedInstanceId
+        ? placement.instance_id === this.animatedInstanceId
+          ? "animated"
+          : null
+        : placement.instance_id === this.selectedInstanceId
+          ? "selected"
+          : placement.instance_id === this.hoveredInstanceId
+            ? "hovered"
             : null;
       const currentKind = mesh.userData.highlightKind ?? null;
       if (currentKind === kind) {
@@ -450,80 +490,44 @@ class ThreeSceneViewer {
       }
 
       if (kind === "hovered") {
-        // 悬停：多层发光白色外边框，箱体稍微提亮
+        // 悬停：轻微提亮 + 单层亮红色粗轮廓。
         const material = mesh.userData.baseMaterial.clone();
-        material.color = mesh.userData.baseMaterial.color.clone().lerp(new THREE.Color(0xffffff), 0.25);
+        material.color = mesh.userData.baseMaterial.color.clone().lerp(new THREE.Color(0xffffff), 0.18);
         material.opacity = this.displayMode === "visible" ? 1 : 0.92;
-        material.emissive = new THREE.Color(0xffffff);
-        material.emissiveIntensity = 0.15;
+        material.emissive = new THREE.Color(HOVERED_OUTLINE_COLOR);
+        material.emissiveIntensity = 0.07;
         mesh.userData.highlightMaterial = material;
         mesh.material = material;
 
-        const geometry = mesh.geometry;
-        const glowGroup = new THREE.Group();
+        const outline = this.createHighlightOutline(mesh.geometry, HOVERED_OUTLINE_COLOR, 0.92);
+        mesh.userData.hoverOutline = outline;
+        mesh.add(outline);
+      } else if (kind === "selected") {
+        // 选中：箱体提亮 + 单层高亮红色粗轮廓。
+        const material = mesh.userData.baseMaterial.clone();
+        material.color = mesh.userData.baseMaterial.color.clone().lerp(new THREE.Color(0xffffff), 0.26);
+        material.opacity = this.displayMode === "visible" ? 1 : 0.92;
+        material.emissive = new THREE.Color(SELECTED_OUTLINE_COLOR);
+        material.emissiveIntensity = 0.12;
+        mesh.userData.highlightMaterial = material;
+        mesh.material = material;
 
-        // 三层发光边框，从内到外逐渐变淡
-        const glowLayers = [
-          { scale: 1.015, opacity: 0.95, linewidth: 2 },
-          { scale: 1.025, opacity: 0.70, linewidth: 2 },
-          { scale: 1.035, opacity: 0.40, linewidth: 2 },
-        ];
-
-        glowLayers.forEach((layer, index) => {
-          const outlineMaterial = new THREE.LineBasicMaterial({
-            color: 0xffffff,
-            transparent: true,
-            opacity: layer.opacity,
-            linewidth: layer.linewidth,
-            depthWrite: false,
-            depthTest: false,
-          });
-          const outline = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), outlineMaterial);
-          outline.renderOrder = 100 + index;
-          outline.scale.setScalar(layer.scale);
-          glowGroup.add(outline);
-        });
-
-        mesh.userData.hoverOutline = glowGroup;
-        mesh.add(glowGroup);
+        const outline = this.createHighlightOutline(mesh.geometry, SELECTED_OUTLINE_COLOR, 0.95);
+        mesh.userData.selectOutline = outline;
+        mesh.add(outline);
       } else {
-        // 选中/动画：箱体大幅提亮 + 多层发光橙色外边框
+        // 动画：当前刚出现的箱体使用同一层醒目的红色高亮。
         const material = mesh.userData.baseMaterial.clone();
-        const lightenRatio = kind === "selected" ? 0.5 : 0.4;
-        material.color = mesh.userData.baseMaterial.color.clone().lerp(new THREE.Color(0xffffff), lightenRatio);
+        material.color = mesh.userData.baseMaterial.color.clone().lerp(new THREE.Color(0xffffff), 0.34);
         material.opacity = this.displayMode === "visible" ? 1 : 0.92;
-        material.emissive = new THREE.Color(0xff6600);
-        material.emissiveIntensity = kind === "selected" ? 0.25 : 0.18;
+        material.emissive = new THREE.Color(ANIMATED_EMISSIVE_COLOR);
+        material.emissiveIntensity = 0.2;
         mesh.userData.highlightMaterial = material;
         mesh.material = material;
 
-        const geometry = mesh.geometry;
-        const glowGroup = new THREE.Group();
-
-        // 三层发光边框，橙红色
-        const glowLayers = [
-          { scale: 1.02, opacity: 1.0, linewidth: 2 },
-          { scale: 1.035, opacity: 0.75, linewidth: 2 },
-          { scale: 1.05, opacity: 0.45, linewidth: 2 },
-        ];
-
-        glowLayers.forEach((layer, index) => {
-          const outlineMaterial = new THREE.LineBasicMaterial({
-            color: 0xff3d00,
-            transparent: true,
-            opacity: layer.opacity,
-            linewidth: layer.linewidth,
-            depthWrite: false,
-            depthTest: false,
-          });
-          const outline = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), outlineMaterial);
-          outline.renderOrder = 100 + index;
-          outline.scale.setScalar(layer.scale);
-          glowGroup.add(outline);
-        });
-
-        mesh.userData.selectOutline = glowGroup;
-        mesh.add(glowGroup);
+        const outline = this.createHighlightOutline(mesh.geometry, SELECTED_OUTLINE_COLOR, 0.95);
+        mesh.userData.selectOutline = outline;
+        mesh.add(outline);
       }
     });
     this.updateMaterialMode();

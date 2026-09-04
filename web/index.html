@@ -259,6 +259,110 @@
         </div>
       </section>
 
+      <section class="panel xy-model-panel" aria-labelledby="xy-model-title">
+        <div class="panel-title xy-model-title">
+          <span class="panel-kicker">Layout Studio</span>
+          <h2 id="xy-model-title">x-y 平面建模</h2>
+          <p>在 ULD 底面上建立多个矩形 footprint。拖拽改变位置，拖动旋转柄改变角度，右侧数值始终保留精确坐标。</p>
+        </div>
+        <div class="xy-model-body">
+          <div class="xy-model-stage">
+            <div class="xy-model-toolbar">
+              <div class="xy-reference-control">
+                <label for="xyUldSelect">
+                  参考 ULD
+                  <select id="xyUldSelect" aria-label="选择 XY 建模参考 ULD"></select>
+                </label>
+                <div id="xyBoardMeta" class="xy-board-meta muted-text">等待 ULD 数据</div>
+              </div>
+              <div class="xy-model-actions" aria-label="XY 建模操作">
+                <button id="xyAddRectangleButton" type="button" class="primary-button small-button">添加矩形</button>
+                <button id="xyDuplicateRectangleButton" type="button" class="secondary-button small-button">复制</button>
+                <button id="xyDeleteRectangleButton" type="button" class="secondary-button small-button">删除</button>
+                <button id="xyUndoButton" type="button" class="secondary-button small-button" disabled>撤销</button>
+                <button id="xyRedoButton" type="button" class="secondary-button small-button" disabled>重做</button>
+                <button id="xyClearButton" type="button" class="secondary-button small-button">清空</button>
+              </div>
+            </div>
+            <div class="xy-canvas-frame">
+              <canvas id="xyModelCanvas" tabindex="0" aria-label="x-y 平面矩形建模画布"></canvas>
+              <div class="xy-canvas-overlay" aria-hidden="true">
+                <div id="xyCanvasStatus" class="xy-status-pill">未选择矩形</div>
+                <div class="xy-axis-key"><span class="xy-axis-x">x</span> 长度 <span class="xy-axis-y">y</span> 宽度</div>
+              </div>
+            </div>
+            <div class="xy-canvas-footer">
+              <span>拖拽矩形移动 · 点击顶点查看坐标 · 拖动上方旋转柄 · 双击角度滑条归零 · Shift 吸附 15°</span>
+              <div class="xy-zoom-controls" aria-label="画布缩放">
+                <button id="xyZoomOutButton" type="button" class="secondary-button small-button" aria-label="缩小画布">−</button>
+                <output id="xyZoomValue">100%</output>
+                <button id="xyZoomInButton" type="button" class="secondary-button small-button" aria-label="放大画布">+</button>
+                <button id="xyFitButton" type="button" class="secondary-button small-button">适配</button>
+              </div>
+            </div>
+          </div>
+
+          <aside class="xy-model-inspector" aria-label="XY 矩形精确参数">
+            <div class="xy-inspector-header">
+              <div>
+                <span class="xy-inspector-eyebrow">Selected rectangle</span>
+                <strong id="xySelectedLabel">未选择矩形</strong>
+              </div>
+              <span id="xySelectedIndex" class="xy-selected-index">—</span>
+            </div>
+            <div id="xyInspectorEmpty" class="xy-inspector-empty">
+              <span class="xy-empty-mark" aria-hidden="true">＋</span>
+              <strong>先添加一个矩形</strong>
+              <span>所有尺寸、中心坐标和旋转角都可以在这里精确修改。</span>
+            </div>
+            <div id="xyInspectorFields" class="xy-inspector-fields" hidden>
+              <label class="xy-field xy-field-wide" for="xyRectIdInput">
+                矩形 ID
+                <input id="xyRectIdInput" data-xy-field="id" type="text" spellcheck="false" />
+              </label>
+              <div class="xy-field-grid">
+                <label class="xy-field" for="xyRectXInput">
+                  中心 X
+                  <input id="xyRectXInput" data-xy-field="x" type="number" step="any" inputmode="decimal" />
+                </label>
+                <label class="xy-field" for="xyRectYInput">
+                  中心 Y
+                  <input id="xyRectYInput" data-xy-field="y" type="number" step="any" inputmode="decimal" />
+                </label>
+                <label class="xy-field" for="xyRectWidthInput">
+                  长度 X
+                  <input id="xyRectWidthInput" data-xy-field="width" type="number" min="0.001" step="any" inputmode="decimal" />
+                </label>
+                <label class="xy-field" for="xyRectHeightInput">
+                  宽度 Y
+                  <input id="xyRectHeightInput" data-xy-field="height" type="number" min="0.001" step="any" inputmode="decimal" />
+                </label>
+              </div>
+              <label class="xy-field xy-field-wide xy-rotation-field" for="xyRectRotationInput">
+                <span class="xy-rotation-label-row"><span>旋转角度</span><output id="xyRectRotationValue">0°</output></span>
+                <input id="xyRectRotationInput" data-xy-field="rotation" type="range" min="-180" max="180" step="any" aria-label="旋转角度" />
+                <span class="xy-rotation-scale" aria-hidden="true"><span>-180°</span><span>0°</span><span>180°</span></span>
+              </label>
+              <div id="xyRectStatus" class="xy-rect-status">正值为顺时针旋转 · 坐标原点在左下角</div>
+              <div id="xyVertexReadout" class="xy-vertex-readout" aria-live="polite" hidden>
+                <div class="xy-vertex-readout-heading"><span>已选顶点</span><strong id="xySelectedVertexLabel">P1</strong></div>
+                <div class="xy-vertex-coordinate"><span>X</span><code id="xySelectedVertexX">--</code><span>Y</span><code id="xySelectedVertexY">--</code></div>
+              </div>
+            </div>
+
+            <div class="xy-list-heading">
+              <span>矩形清单</span>
+              <strong id="xyRectCount">0 个</strong>
+            </div>
+            <div id="xyRectList" class="xy-rect-list" aria-live="polite"></div>
+            <div id="xyModelStats" class="xy-model-stats">
+              <div><span>已建面积</span><strong>0</strong></div>
+              <div><span>画布面积</span><strong>--</strong></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
       <section class="panel yz-query-panel" aria-labelledby="yz-query-title">
         <div class="panel-title">
           <span class="panel-kicker">Profile Query</span>

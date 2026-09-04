@@ -149,6 +149,25 @@ const state = {
   yzUldId: null,
   yzQueryY: null,
   yzQueryContainers: [],
+  xyModel: {
+    initialized: false,
+    uldId: null,
+    containers: [],
+    layouts: {},
+    zoom: 1,
+    hoveredId: null,
+    pointer: {
+      active: false,
+      mode: null,
+      pointerId: null,
+      offsetX: 0,
+      offsetY: 0,
+      startAngle: 0,
+      startRotation: 0,
+      historyRecorded: false,
+    },
+    editSession: null,
+  },
   camera: {
     yaw: -0.72,
     pitch: 0.58,
@@ -176,6 +195,7 @@ const state = {
     elapsed: 0,
     speed: 1,
     visibleCount: null,
+    highlightedInstanceId: null,
   },
 };
 
@@ -241,6 +261,39 @@ function cacheElements() {
   elements.yzQueryValue = document.getElementById("yzQueryValue");
   elements.yzQueryResult = document.getElementById("yzQueryResult");
   elements.yzQueryHint = document.getElementById("yzQueryHint");
+  elements.xyUldSelect = document.getElementById("xyUldSelect");
+  elements.xyBoardMeta = document.getElementById("xyBoardMeta");
+  elements.xyModelCanvas = document.getElementById("xyModelCanvas");
+  elements.xyCanvasStatus = document.getElementById("xyCanvasStatus");
+  elements.xyAddRectangleButton = document.getElementById("xyAddRectangleButton");
+  elements.xyDuplicateRectangleButton = document.getElementById("xyDuplicateRectangleButton");
+  elements.xyDeleteRectangleButton = document.getElementById("xyDeleteRectangleButton");
+  elements.xyUndoButton = document.getElementById("xyUndoButton");
+  elements.xyRedoButton = document.getElementById("xyRedoButton");
+  elements.xyClearButton = document.getElementById("xyClearButton");
+  elements.xyZoomOutButton = document.getElementById("xyZoomOutButton");
+  elements.xyZoomInButton = document.getElementById("xyZoomInButton");
+  elements.xyFitButton = document.getElementById("xyFitButton");
+  elements.xyZoomValue = document.getElementById("xyZoomValue");
+  elements.xySelectedLabel = document.getElementById("xySelectedLabel");
+  elements.xySelectedIndex = document.getElementById("xySelectedIndex");
+  elements.xyInspectorEmpty = document.getElementById("xyInspectorEmpty");
+  elements.xyInspectorFields = document.getElementById("xyInspectorFields");
+  elements.xyRectIdInput = document.getElementById("xyRectIdInput");
+  elements.xyRectXInput = document.getElementById("xyRectXInput");
+  elements.xyRectYInput = document.getElementById("xyRectYInput");
+  elements.xyRectWidthInput = document.getElementById("xyRectWidthInput");
+  elements.xyRectHeightInput = document.getElementById("xyRectHeightInput");
+  elements.xyRectRotationInput = document.getElementById("xyRectRotationInput");
+  elements.xyRectRotationValue = document.getElementById("xyRectRotationValue");
+  elements.xyRectStatus = document.getElementById("xyRectStatus");
+  elements.xyVertexReadout = document.getElementById("xyVertexReadout");
+  elements.xySelectedVertexLabel = document.getElementById("xySelectedVertexLabel");
+  elements.xySelectedVertexX = document.getElementById("xySelectedVertexX");
+  elements.xySelectedVertexY = document.getElementById("xySelectedVertexY");
+  elements.xyRectCount = document.getElementById("xyRectCount");
+  elements.xyRectList = document.getElementById("xyRectList");
+  elements.xyModelStats = document.getElementById("xyModelStats");
   elements.canvas = document.getElementById("sceneCanvas");
   elements.sceneTooltip = document.getElementById("sceneTooltip");
   elements.sceneStage = elements.canvas.parentElement;
@@ -296,6 +349,38 @@ function bindEvents() {
   elements.containerSelector.addEventListener("change", () => selectContainer(elements.containerSelector.value));
   elements.containerTableBody.addEventListener("input", syncYzQueryContainersFromForm);
   elements.containerTableBody.addEventListener("change", syncYzQueryContainersFromForm);
+  elements.xyUldSelect.addEventListener("change", () => selectXyModelUld(elements.xyUldSelect.value));
+  elements.xyAddRectangleButton.addEventListener("click", addXyRectangle);
+  elements.xyDuplicateRectangleButton.addEventListener("click", duplicateXyRectangle);
+  elements.xyDeleteRectangleButton.addEventListener("click", deleteSelectedXyRectangle);
+  elements.xyUndoButton.addEventListener("click", undoXyEdit);
+  elements.xyRedoButton.addEventListener("click", redoXyEdit);
+  elements.xyClearButton.addEventListener("click", clearXyRectangles);
+  elements.xyZoomOutButton.addEventListener("click", () => setXyZoom(state.xyModel.zoom - 0.1));
+  elements.xyZoomInButton.addEventListener("click", () => setXyZoom(state.xyModel.zoom + 0.1));
+  elements.xyFitButton.addEventListener("click", () => setXyZoom(1));
+  elements.xyModelCanvas.addEventListener("pointerdown", startXyPointer);
+  elements.xyModelCanvas.addEventListener("pointermove", moveXyPointer);
+  elements.xyModelCanvas.addEventListener("pointerup", endXyPointer);
+  elements.xyModelCanvas.addEventListener("pointercancel", endXyPointer);
+  elements.xyModelCanvas.addEventListener("pointerleave", (event) => {
+    if (!state.xyModel.pointer.active) {
+      updateXyCanvasHover(null, event);
+    }
+  });
+  elements.xyModelCanvas.addEventListener("wheel", zoomXyCanvas, { passive: false });
+  elements.xyModelCanvas.addEventListener("keydown", handleXyCanvasKeydown);
+  elements.xyInspectorFields.addEventListener("focusin", beginXyInspectorEdit);
+  elements.xyInspectorFields.addEventListener("input", updateXyInspectorField);
+  elements.xyInspectorFields.addEventListener("change", commitXyInspectorEdit);
+  elements.xyInspectorFields.addEventListener("focusout", commitXyInspectorEdit);
+  elements.xyRectRotationInput.addEventListener("dblclick", resetXyRotationSlider);
+  elements.xyRectList.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-xy-rectangle-id]");
+    if (item) {
+      selectXyRectangle(item.dataset.xyRectangleId);
+    }
+  });
   elements.yzUldSelect.addEventListener("change", () => selectYzQueryUld(elements.yzUldSelect.value));
   elements.yzQueryYInput.addEventListener("input", () => setYzQueryY(elements.yzQueryYInput.value));
   elements.yzQuerySlider.addEventListener("input", () => setYzQueryY(elements.yzQuerySlider.value));
@@ -402,12 +487,12 @@ async function loadSample() {
   } catch {
     state.input = structuredClone(fallbackInput);
   }
-  writeInputToForm(state.input);
+  writeInputToForm(state.input, { resetXy: true });
   configureSliceControl(state.input.containers[0].length);
   clearError();
 }
 
-function writeInputToForm(input, { mergeSummary = null } = {}) {
+function writeInputToForm(input, { mergeSummary = null, resetXy = false } = {}) {
   const normalized = normalizeInput(input);
   state.boxMergeSummary = mergeSummary;
   state.yzQueryContainers = structuredClone(normalized.containers);
@@ -420,6 +505,7 @@ function writeInputToForm(input, { mergeSummary = null } = {}) {
   elements.searchModeSelect.value = normalized.search_mode;
   updateBoxMergeNotice();
   renderYzUldSelector();
+  syncXyModelToContainers(normalized.containers, { reset: resetXy });
 }
 
 async function readJsonResponse(response) {
@@ -3133,6 +3219,7 @@ async function calculatePacking(options = {}) {
     state.input = input;
     state.yzQueryContainers = structuredClone(input.containers);
     renderYzUldSelector();
+    syncXyModelToContainers(input.containers);
     state.result = normalizeResultHeightSwapFlags(data.result, input);
     const serverElapsedSeconds = Number(data.elapsed_seconds);
     const elapsedSeconds = Number.isFinite(serverElapsedSeconds)
@@ -3275,7 +3362,10 @@ function selectHistoryRecord(recordId) {
   state.selectedInstanceId = null;
   state.hoveredInstanceId = null;
   state.focusedBoxId = null;
-  writeInputToForm(state.input, { mergeSummary: mergeSummary.mergedRowCount > 0 ? mergeSummary : null });
+  writeInputToForm(state.input, {
+    mergeSummary: mergeSummary.mergedRowCount > 0 ? mergeSummary : null,
+    resetXy: true,
+  });
   clearError();
   resetAnimationState({ showFull: true });
   hideSceneTooltip();
@@ -3488,6 +3578,9 @@ function syncYzQueryContainersFromForm() {
     state.yzQueryY = null;
   }
   renderYzUldSelector();
+  if (containers.length > 0 || elements.containerTableBody.querySelectorAll("tr").length === 0) {
+    syncXyModelToContainers(containers);
+  }
 }
 
 function renderYzUldSelector() {
@@ -3537,6 +3630,7 @@ function syncYzQueryToActiveContainer() {
   if (elements.yzUldSelect) {
     elements.yzUldSelect.value = activeType;
   }
+  selectXyModelUld(activeType, { draw: false });
   renderYzProfileQuery();
 }
 
@@ -3546,6 +3640,7 @@ function selectYzQueryUld(uldId) {
   }
   state.yzUldId = uldId;
   state.yzQueryY = null;
+  selectXyModelUld(uldId, { draw: false });
   const matchingResult = state.result?.containers?.find((container) => container.container_type === uldId);
   if (matchingResult) {
     selectContainer(matchingResult.container_id);
@@ -3710,6 +3805,7 @@ function drawYzProfileQuery() {
     context.beginPath();
     context.arc(high.x, high.y, 5, 0, Math.PI * 2);
     context.fill();
+    context.fillStyle = themeCssValue("--text-strong", "#0f172a");
     context.font = "700 12px system-ui, sans-serif";
     context.fillText(`z=${formatNumber(interval.maxZ)}`, high.x + 8, high.y - 8);
   }
@@ -3731,6 +3827,1196 @@ function selectYzQueryAtPointer(event) {
   const offsetX = (rect.width - bounds.maxY * scale) / 2;
   const queryY = (event.clientX - rect.left - offsetX) / scale;
   setYzQueryY(queryY);
+}
+
+function getXyModelContainers() {
+  return state.xyModel.initialized ? state.xyModel.containers : state.input?.containers ?? [];
+}
+
+function syncXyModelToContainers(containers, { reset = false } = {}) {
+  const nextContainers = Array.isArray(containers)
+    ? containers.filter((container) => container?.id && Number.isFinite(Number(container.length)))
+    : [];
+  const nextIds = nextContainers.map((container) => String(container.id));
+  const model = state.xyModel;
+  model.containers = nextContainers;
+
+  if (reset || !model.initialized) {
+    model.initialized = true;
+    model.uldId = nextIds[0] ?? null;
+    model.layouts = Object.create(null);
+    model.zoom = 1;
+    model.hoveredId = null;
+    model.pointer.active = false;
+    model.editSession = null;
+  } else if (!nextIds.includes(model.uldId)) {
+    model.uldId = nextIds[0] ?? null;
+    model.hoveredId = null;
+  }
+
+  Object.keys(model.layouts).forEach((uldId) => {
+    if (!nextIds.includes(uldId)) {
+      delete model.layouts[uldId];
+    }
+  });
+  if (model.uldId) {
+    ensureXyLayout(model.uldId);
+  }
+  renderXyUldSelector();
+  renderXyInspector();
+  drawXyModel();
+}
+
+function ensureXyLayout(uldId) {
+  if (!uldId) {
+    return null;
+  }
+  const layouts = state.xyModel.layouts;
+  if (!Object.prototype.hasOwnProperty.call(layouts, uldId)) {
+    layouts[uldId] = {
+      rectangles: [],
+      selectedId: null,
+      selectedVertexIndex: null,
+      past: [],
+      future: [],
+    };
+  }
+  return layouts[uldId];
+}
+
+function getXyLayout() {
+  const container = getXyModelContainer();
+  return container ? ensureXyLayout(container.id) : null;
+}
+
+function getXyModelContainer() {
+  const containers = getXyModelContainers();
+  return containers.find((container) => String(container.id) === String(state.xyModel.uldId)) ?? containers[0] ?? null;
+}
+
+function selectXyModelUld(uldId, { draw = true } = {}) {
+  const container = getXyModelContainers().find((item) => String(item.id) === String(uldId));
+  if (!container) {
+    return;
+  }
+  state.xyModel.uldId = String(container.id);
+  state.xyModel.hoveredId = null;
+  ensureXyLayout(state.xyModel.uldId);
+  renderXyUldSelector();
+  renderXyInspector();
+  if (draw) {
+    drawXyModel();
+  }
+}
+
+function renderXyUldSelector() {
+  if (!elements.xyUldSelect) {
+    return;
+  }
+  const containers = getXyModelContainers();
+  if (containers.length === 0) {
+    elements.xyUldSelect.innerHTML = '<option value="">暂无 ULD 数据</option>';
+    elements.xyUldSelect.disabled = true;
+    return;
+  }
+  if (!containers.some((container) => String(container.id) === String(state.xyModel.uldId))) {
+    state.xyModel.uldId = String(containers[0].id);
+    ensureXyLayout(state.xyModel.uldId);
+  }
+  elements.xyUldSelect.disabled = false;
+  elements.xyUldSelect.innerHTML = containers
+    .map((container) => {
+      const board = xyBoardDimensionsForContainer(container);
+      return `<option value="${escapeAttribute(container.id)}">${escapeHtml(container.id)}（${formatXyNumber(board.width)} × ${formatXyNumber(board.height)}）</option>`;
+    })
+    .join("");
+  elements.xyUldSelect.value = state.xyModel.uldId;
+}
+
+function xyBoardDimensionsForContainer(container) {
+  const length = Number(container?.length);
+  const bounds = yzCrossSectionBounds(container?.cross_section);
+  const minY = Number.isFinite(bounds?.minY) ? Math.min(0, bounds.minY) : 0;
+  const maxY = Number.isFinite(bounds?.maxY) ? Math.max(minY + 1, bounds.maxY) : 240;
+  const maxX = Number.isFinite(length) && length > 0 ? length : 300;
+  return {
+    minX: 0,
+    maxX,
+    minY,
+    maxY,
+    width: Math.max(1, maxX),
+    height: Math.max(1, maxY - minY),
+  };
+}
+
+function xyBoardDimensions() {
+  return xyBoardDimensionsForContainer(getXyModelContainer());
+}
+
+function renderXyInspector() {
+  const layout = getXyLayout();
+  const rectangle = layout?.rectangles.find((item) => item.id === layout.selectedId) ?? null;
+  const board = xyBoardDimensions();
+
+  if (elements.xySelectedLabel) {
+    elements.xySelectedLabel.textContent = rectangle?.id ?? "未选择矩形";
+  }
+  if (elements.xySelectedIndex) {
+    const index = rectangle && layout ? layout.rectangles.indexOf(rectangle) + 1 : 0;
+    elements.xySelectedIndex.textContent = index ? `${String(index).padStart(2, "0")} / ${layout.rectangles.length}` : "—";
+  }
+  if (elements.xyInspectorEmpty) {
+    elements.xyInspectorEmpty.hidden = Boolean(rectangle);
+  }
+  if (elements.xyInspectorFields) {
+    elements.xyInspectorFields.hidden = !rectangle;
+  }
+  if (rectangle) {
+    syncXyInspectorInputs(rectangle);
+    updateXyRectangleStatus(rectangle, board);
+  }
+  updateXyVertexReadout(layout, rectangle);
+  renderXyRectangleList();
+  updateXyModelStats(layout, board);
+  updateXyModelActionButtons(layout, rectangle);
+}
+
+function updateXyVertexReadout(layout, rectangle) {
+  if (!elements.xyVertexReadout) {
+    return;
+  }
+  const vertexIndex = xyValidVertexIndex(layout?.selectedVertexIndex);
+  const visible = Boolean(rectangle && vertexIndex !== null);
+  elements.xyVertexReadout.hidden = !visible;
+  if (!visible) {
+    if (elements.xySelectedVertexLabel) {
+      elements.xySelectedVertexLabel.textContent = "P1";
+    }
+    if (elements.xySelectedVertexX) {
+      elements.xySelectedVertexX.textContent = "--";
+    }
+    if (elements.xySelectedVertexY) {
+      elements.xySelectedVertexY.textContent = "--";
+    }
+    return;
+  }
+  const [x, y] = xyRectangleCorners(rectangle)[vertexIndex];
+  if (elements.xySelectedVertexLabel) {
+    elements.xySelectedVertexLabel.textContent = `P${vertexIndex + 1}`;
+  }
+  if (elements.xySelectedVertexX) {
+    elements.xySelectedVertexX.textContent = formatXyNumber(x);
+  }
+  if (elements.xySelectedVertexY) {
+    elements.xySelectedVertexY.textContent = formatXyNumber(y);
+  }
+}
+
+function syncXyInspectorInputs(rectangle) {
+  if (!rectangle) {
+    return;
+  }
+  if (elements.xyRectIdInput) {
+    elements.xyRectIdInput.value = rectangle.id;
+  }
+  if (elements.xyRectXInput) {
+    elements.xyRectXInput.value = formatXyInputValue(rectangle.x);
+  }
+  if (elements.xyRectYInput) {
+    elements.xyRectYInput.value = formatXyInputValue(rectangle.y);
+  }
+  if (elements.xyRectWidthInput) {
+    elements.xyRectWidthInput.value = formatXyInputValue(rectangle.width);
+  }
+  if (elements.xyRectHeightInput) {
+    elements.xyRectHeightInput.value = formatXyInputValue(rectangle.height);
+  }
+  if (elements.xyRectRotationInput) {
+    const rotation = roundXyValue(normalizeXyDegrees(rectangle.rotation));
+    rectangle.rotation = rotation;
+    elements.xyRectRotationInput.min = "-180";
+    elements.xyRectRotationInput.max = "180";
+    elements.xyRectRotationInput.value = formatXyInputValue(rotation);
+    if (elements.xyRectRotationValue) {
+      elements.xyRectRotationValue.textContent = `${formatXyNumber(rotation)}°`;
+    }
+  }
+}
+
+function formatXyInputValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? String(number) : "";
+}
+
+function renderXyRectangleList() {
+  if (!elements.xyRectList) {
+    return;
+  }
+  const layout = getXyLayout();
+  const rectangles = layout?.rectangles ?? [];
+  if (elements.xyRectCount) {
+    elements.xyRectCount.textContent = `${rectangles.length} 个`;
+  }
+  if (rectangles.length === 0) {
+    elements.xyRectList.innerHTML = '<div class="xy-rect-list-empty">还没有矩形。添加后可从这里快速切换对象。</div>';
+    return;
+  }
+  elements.xyRectList.innerHTML = rectangles
+    .map((rectangle) => {
+      const color = colorForBox(rectangle.id);
+      const selected = rectangle.id === layout.selectedId;
+      return `<button type="button" class="xy-rect-list-item" data-xy-rectangle-id="${escapeAttribute(rectangle.id)}" aria-selected="${selected}">
+        <span class="xy-rect-list-swatch" style="background:${rgbaColor(color, 0.9)}"></span>
+        <span class="xy-rect-list-copy"><strong>${escapeHtml(rectangle.id)}</strong><span>${formatXyNumber(rectangle.width)} × ${formatXyNumber(rectangle.height)} · 中心 ${formatXyNumber(rectangle.x)}, ${formatXyNumber(rectangle.y)}</span></span>
+        <span class="xy-rect-list-angle">${formatXyNumber(rectangle.rotation)}°</span>
+      </button>`;
+    })
+    .join("");
+}
+
+function updateXyModelStats(layout, board) {
+  if (!elements.xyModelStats) {
+    return;
+  }
+  const rectangles = layout?.rectangles ?? [];
+  const area = rectangles.reduce((sum, rectangle) => sum + Number(rectangle.width) * Number(rectangle.height), 0);
+  elements.xyModelStats.innerHTML = `
+    <div><span>已建面积</span><strong>${formatXyNumber(area)}</strong></div>
+    <div><span>画布面积</span><strong>${formatXyNumber(board.width * board.height)}</strong></div>
+    <div><span>矩形数量</span><strong>${rectangles.length}</strong></div>
+  `;
+}
+
+function updateXyModelActionButtons(layout, rectangle) {
+  if (elements.xyDuplicateRectangleButton) {
+    elements.xyDuplicateRectangleButton.disabled = !rectangle;
+  }
+  if (elements.xyDeleteRectangleButton) {
+    elements.xyDeleteRectangleButton.disabled = !rectangle;
+  }
+  if (elements.xyUndoButton) {
+    elements.xyUndoButton.disabled = !(layout?.past.length > 0);
+  }
+  if (elements.xyRedoButton) {
+    elements.xyRedoButton.disabled = !(layout?.future.length > 0);
+  }
+  if (elements.xyClearButton) {
+    elements.xyClearButton.disabled = !(layout?.rectangles.length > 0);
+  }
+}
+
+function selectXyRectangle(rectangleId) {
+  const layout = getXyLayout();
+  if (!layout) {
+    return;
+  }
+  layout.selectedId = layout.rectangles.some((rectangle) => rectangle.id === rectangleId) ? rectangleId : null;
+  layout.selectedVertexIndex = null;
+  state.xyModel.hoveredId = null;
+  renderXyInspector();
+  drawXyModel();
+}
+
+function xySnapshot(layout) {
+  return {
+    rectangles: structuredClone(layout.rectangles),
+    selectedId: layout.selectedId,
+    selectedVertexIndex: xyValidVertexIndex(layout.selectedVertexIndex),
+  };
+}
+
+function recordXyHistory(layout) {
+  if (!layout) {
+    return;
+  }
+  layout.past.push(xySnapshot(layout));
+  if (layout.past.length > 80) {
+    layout.past.shift();
+  }
+  layout.future = [];
+}
+
+function restoreXySnapshot(layout, snapshot) {
+  if (!layout || !snapshot) {
+    return;
+  }
+  layout.rectangles = structuredClone(snapshot.rectangles ?? []);
+  layout.selectedId = layout.rectangles.some((rectangle) => rectangle.id === snapshot.selectedId)
+    ? snapshot.selectedId
+    : layout.rectangles[0]?.id ?? null;
+  layout.selectedVertexIndex = layout.selectedId === snapshot.selectedId
+    ? xyValidVertexIndex(snapshot.selectedVertexIndex)
+    : null;
+  state.xyModel.hoveredId = null;
+  state.xyModel.editSession = null;
+  renderXyInspector();
+  drawXyModel();
+}
+
+function undoXyEdit() {
+  const layout = getXyLayout();
+  if (!layout?.past.length) {
+    return;
+  }
+  layout.future.push(xySnapshot(layout));
+  restoreXySnapshot(layout, layout.past.pop());
+}
+
+function redoXyEdit() {
+  const layout = getXyLayout();
+  if (!layout?.future.length) {
+    return;
+  }
+  layout.past.push(xySnapshot(layout));
+  restoreXySnapshot(layout, layout.future.pop());
+}
+
+function addXyRectangle() {
+  const layout = getXyLayout();
+  if (!layout) {
+    return;
+  }
+  const board = xyBoardDimensions();
+  const source = (state.input?.boxes ?? []).find((box) => Number(box.quantity) > 0) ?? state.input?.boxes?.[0];
+  const width = xyDimensionForNewRectangle(source?.length, board.width * 0.32, board.width);
+  const height = xyDimensionForNewRectangle(source?.width, board.height * 0.28, board.height);
+  const index = layout.rectangles.length;
+  const columns = Math.max(1, Math.floor(board.width / Math.max(width + 10, 1)));
+  const column = index % columns;
+  const row = Math.floor(index / columns);
+  const x = xySafeCenter(board.minX + width / 2 + column * (width + 10), board.minX + width / 2, board.maxX - width / 2);
+  const y = xySafeCenter(board.minY + height / 2 + row * (height + 10), board.minY + height / 2, board.maxY - height / 2);
+  recordXyHistory(layout);
+  const rectangle = {
+    id: nextXyRectangleId(layout),
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+  };
+  layout.rectangles.push(rectangle);
+  layout.selectedId = rectangle.id;
+  layout.selectedVertexIndex = null;
+  renderXyInspector();
+  drawXyModel();
+  elements.xyModelCanvas?.focus();
+}
+
+function xyDimensionForNewRectangle(value, fallback, boardSize) {
+  const numeric = Number(value);
+  const desired = Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
+  return Math.max(1, Math.min(desired, Math.max(1, boardSize * 0.78)));
+}
+
+function xySafeCenter(value, min, max) {
+  if (max < min) {
+    return (min + max) / 2;
+  }
+  return clamp(value, min, max);
+}
+
+function nextXyRectangleId(layout) {
+  const used = new Set(layout.rectangles.map((rectangle) => rectangle.id));
+  let index = 1;
+  let id = `R-${String(index).padStart(2, "0")}`;
+  while (used.has(id)) {
+    index += 1;
+    id = `R-${String(index).padStart(2, "0")}`;
+  }
+  return id;
+}
+
+function duplicateXyRectangle() {
+  const layout = getXyLayout();
+  const rectangle = getSelectedXyRectangle();
+  if (!layout || !rectangle) {
+    return;
+  }
+  const board = xyBoardDimensions();
+  recordXyHistory(layout);
+  const copy = {
+    ...structuredClone(rectangle),
+    id: nextXyRectangleId(layout),
+    x: xySafeCenter(rectangle.x + 16, board.minX + rectangle.width / 2, board.maxX - rectangle.width / 2),
+    y: xySafeCenter(rectangle.y + 16, board.minY + rectangle.height / 2, board.maxY - rectangle.height / 2),
+  };
+  layout.rectangles.push(copy);
+  layout.selectedId = copy.id;
+  layout.selectedVertexIndex = null;
+  renderXyInspector();
+  drawXyModel();
+}
+
+function deleteSelectedXyRectangle() {
+  const layout = getXyLayout();
+  const index = layout?.rectangles.findIndex((rectangle) => rectangle.id === layout.selectedId) ?? -1;
+  if (!layout || index < 0) {
+    return;
+  }
+  recordXyHistory(layout);
+  layout.rectangles.splice(index, 1);
+  layout.selectedId = layout.rectangles[Math.max(0, index - 1)]?.id ?? layout.rectangles[0]?.id ?? null;
+  layout.selectedVertexIndex = null;
+  renderXyInspector();
+  drawXyModel();
+}
+
+function clearXyRectangles() {
+  const layout = getXyLayout();
+  if (!layout?.rectangles.length) {
+    return;
+  }
+  recordXyHistory(layout);
+  layout.rectangles = [];
+  layout.selectedId = null;
+  layout.selectedVertexIndex = null;
+  renderXyInspector();
+  drawXyModel();
+}
+
+function getSelectedXyRectangle() {
+  const layout = getXyLayout();
+  return layout?.rectangles.find((rectangle) => rectangle.id === layout.selectedId) ?? null;
+}
+
+function beginXyInspectorEdit(event) {
+  const target = event.target.closest("[data-xy-field]");
+  const layout = getXyLayout();
+  if (!target || !layout || !getSelectedXyRectangle() || state.xyModel.editSession) {
+    return;
+  }
+  recordXyHistory(layout);
+  state.xyModel.editSession = {
+    layout,
+    rectangle: getSelectedXyRectangle(),
+  };
+}
+
+function updateXyInspectorField(event) {
+  const target = event.target.closest("[data-xy-field]");
+  if (!target) {
+    return;
+  }
+  let session = state.xyModel.editSession;
+  if (!session) {
+    const layout = getXyLayout();
+    const rectangle = getSelectedXyRectangle();
+    if (!layout || !rectangle) {
+      return;
+    }
+    recordXyHistory(layout);
+    session = {
+      layout,
+      rectangle,
+    };
+    state.xyModel.editSession = session;
+  }
+  const rectangle = session.rectangle;
+  const field = target.dataset.xyField;
+  if (field === "id") {
+    const nextId = target.value.trim();
+    const duplicate = session.layout.rectangles.some((item) => item !== rectangle && item.id === nextId);
+    if (!nextId || duplicate) {
+      setXyRectangleStatus(duplicate ? "ID 不能与其他矩形重复" : "ID 不能为空", "warning");
+      return;
+    }
+    session.layout.selectedId = nextId;
+    rectangle.id = nextId;
+    if (elements.xySelectedLabel) {
+      elements.xySelectedLabel.textContent = nextId;
+    }
+  } else {
+    const numeric = Number(target.value);
+    if (!Number.isFinite(numeric) || ((field === "width" || field === "height") && numeric <= 0)) {
+      setXyRectangleStatus(`${xyFieldLabel(field)} 需要输入有效数值`, "warning");
+      return;
+    }
+    rectangle[field] = field === "rotation" ? roundXyValue(normalizeXyDegrees(numeric)) : numeric;
+  }
+  renderXyRectangleList();
+  updateXyModelStats(session.layout, xyBoardDimensions());
+  updateXyModelActionButtons(session.layout, rectangle);
+  updateXyRectangleStatus(rectangle, xyBoardDimensions());
+  if (field === "rotation") {
+    syncXyInspectorInputs(rectangle);
+  }
+  drawXyModel();
+}
+
+function commitXyInspectorEdit(event) {
+  const target = event.target.closest("[data-xy-field]");
+  if (!target || !state.xyModel.editSession) {
+    return;
+  }
+  const session = state.xyModel.editSession;
+  state.xyModel.editSession = null;
+  const rectangle = session.layout.rectangles.find((item) => item.id === session.layout.selectedId) ?? session.rectangle;
+  syncXyInspectorInputs(rectangle);
+  renderXyRectangleList();
+  updateXyModelStats(session.layout, xyBoardDimensions());
+  updateXyModelActionButtons(session.layout, rectangle);
+  updateXyRectangleStatus(rectangle, xyBoardDimensions());
+  drawXyModel();
+}
+
+function xyFieldLabel(field) {
+  return {
+    x: "中心 X",
+    y: "中心 Y",
+    width: "长度 X",
+    height: "宽度 Y",
+    rotation: "旋转角度",
+  }[field] ?? "参数";
+}
+
+function updateXyRectangleStatus(rectangle, board) {
+  const bounds = xyRectangleBounds(rectangle);
+  const overflow = [];
+  if (bounds.minX < board.minX - 1e-7) overflow.push("左侧");
+  if (bounds.maxX > board.maxX + 1e-7) overflow.push("右侧");
+  if (bounds.minY < board.minY - 1e-7) overflow.push("下侧");
+  if (bounds.maxY > board.maxY + 1e-7) overflow.push("上侧");
+  const text = overflow.length
+    ? `超出画布：${overflow.join("、")} · 可继续保留精确数值`
+    : `位于画布内 · 中心 ${formatXyNumber(rectangle.x)}, ${formatXyNumber(rectangle.y)}`;
+  setXyRectangleStatus(text, overflow.length ? "warning" : "ready");
+}
+
+function setXyRectangleStatus(text, stateValue = "ready") {
+  if (!elements.xyRectStatus) {
+    return;
+  }
+  elements.xyRectStatus.textContent = text;
+  elements.xyRectStatus.dataset.state = stateValue;
+}
+
+function updateXyCanvasStatus(layout, board) {
+  if (!elements.xyCanvasStatus) {
+    return;
+  }
+  const rectangle = layout?.rectangles.find((item) => item.id === layout.selectedId) ?? null;
+  updateXyVertexReadout(layout, rectangle);
+  if (!rectangle) {
+    elements.xyCanvasStatus.textContent = layout?.rectangles.length ? `${layout.rectangles.length} 个矩形 · 点击对象查看参数` : "未选择矩形 · 点击“添加矩形”开始";
+    elements.xyCanvasStatus.dataset.state = "ready";
+    return;
+  }
+  const bounds = xyRectangleBounds(rectangle);
+  const outside = bounds.minX < board.minX - 1e-7 || bounds.maxX > board.maxX + 1e-7 || bounds.minY < board.minY - 1e-7 || bounds.maxY > board.maxY + 1e-7;
+  const vertexIndex = xyValidVertexIndex(layout.selectedVertexIndex);
+  if (vertexIndex !== null) {
+    const [x, y] = xyRectangleCorners(rectangle)[vertexIndex];
+    elements.xyCanvasStatus.textContent = `${rectangle.id} · P${vertexIndex + 1} · X ${formatXyNumber(x)} · Y ${formatXyNumber(y)}`;
+  } else {
+    elements.xyCanvasStatus.textContent = `${rectangle.id} · ${formatXyNumber(rectangle.width)} × ${formatXyNumber(rectangle.height)} · ${formatXyNumber(rectangle.rotation)}°`;
+  }
+  elements.xyCanvasStatus.dataset.state = outside ? "warning" : "ready";
+}
+
+function drawXyModel() {
+  if (!elements.xyModelCanvas?.getContext) {
+    return;
+  }
+  const { context, rect } = setupCanvas(elements.xyModelCanvas);
+  context.clearRect(0, 0, rect.width, rect.height);
+  const board = xyBoardDimensions();
+  const mapper = createXyMapper(rect, board);
+  state.xyModel.mapper = mapper;
+  const layout = getXyLayout();
+  if (elements.xyBoardMeta) {
+    const container = getXyModelContainer();
+    elements.xyBoardMeta.textContent = container
+      ? `${container.id} · x ${formatXyNumber(board.minX)}–${formatXyNumber(board.maxX)} · y ${formatXyNumber(board.minY)}–${formatXyNumber(board.maxY)} · 单位 mm`
+      : "等待 ULD 数据";
+  }
+  updateXyZoomOutput();
+  drawXyGrid(context, mapper, board, rect);
+  if (!layout || layout.rectangles.length === 0) {
+    drawXyEmptyCanvas(context, mapper, board);
+    updateXyCanvasStatus(layout, board);
+    return;
+  }
+  const rectangles = [...layout.rectangles].sort((first, second) => {
+    if (first.id === layout.selectedId) return 1;
+    if (second.id === layout.selectedId) return -1;
+    return 0;
+  });
+  rectangles.forEach((rectangle) => {
+    drawXyRectangle(
+      context,
+      mapper,
+      rectangle,
+      rectangle.id === layout.selectedId,
+      rectangle.id === state.xyModel.hoveredId,
+      board,
+      rectangle.id === layout.selectedId ? layout.selectedVertexIndex : null,
+    );
+  });
+  updateXyCanvasStatus(layout, board);
+}
+
+function createXyMapper(rect, board) {
+  const padding = 48;
+  const usableWidth = Math.max(1, rect.width - padding * 2);
+  const usableHeight = Math.max(1, rect.height - padding * 2);
+  const scale = Math.min(usableWidth / board.width, usableHeight / board.height) * state.xyModel.zoom;
+  const offsetX = (rect.width - board.width * scale) / 2;
+  const offsetY = (rect.height - board.height * scale) / 2;
+  return {
+    scale,
+    toScreen(x, y) {
+      return {
+        x: offsetX + (x - board.minX) * scale,
+        y: rect.height - offsetY - (y - board.minY) * scale,
+      };
+    },
+    toWorld(x, y) {
+      return {
+        x: board.minX + (x - offsetX) / scale,
+        y: board.minY + (rect.height - offsetY - y) / scale,
+      };
+    },
+  };
+}
+
+function drawXyGrid(context, mapper, board, rect) {
+  const topLeft = mapper.toScreen(board.minX, board.maxY);
+  const bottomRight = mapper.toScreen(board.maxX, board.minY);
+  const boardRect = {
+    x: topLeft.x,
+    y: topLeft.y,
+    width: bottomRight.x - topLeft.x,
+    height: bottomRight.y - topLeft.y,
+  };
+  context.save();
+  context.fillStyle = themeCssValue("--xy-board-fill", "rgba(255, 255, 255, 0.72)");
+  context.fillRect(boardRect.x, boardRect.y, boardRect.width, boardRect.height);
+  context.beginPath();
+  context.rect(boardRect.x, boardRect.y, boardRect.width, boardRect.height);
+  context.clip();
+  const step = sceneGridStep(Math.max(board.width, board.height));
+  context.lineWidth = 1;
+  for (let x = Math.ceil(board.minX / step) * step; x <= board.maxX + 1e-7; x += step) {
+    const point = mapper.toScreen(x, board.minY);
+    context.strokeStyle = Math.abs(x % (step * 2)) < 1e-7 ? themeCssValue("--xy-grid-major", "rgba(14, 165, 233, 0.25)") : themeCssValue("--xy-grid", "rgba(100, 116, 139, 0.14)");
+    context.beginPath();
+    context.moveTo(point.x, boardRect.y);
+    context.lineTo(point.x, boardRect.y + boardRect.height);
+    context.stroke();
+  }
+  for (let y = Math.ceil(board.minY / step) * step; y <= board.maxY + 1e-7; y += step) {
+    const point = mapper.toScreen(board.minX, y);
+    context.strokeStyle = Math.abs(y % (step * 2)) < 1e-7 ? themeCssValue("--xy-grid-major", "rgba(14, 165, 233, 0.25)") : themeCssValue("--xy-grid", "rgba(100, 116, 139, 0.14)");
+    context.beginPath();
+    context.moveTo(boardRect.x, point.y);
+    context.lineTo(boardRect.x + boardRect.width, point.y);
+    context.stroke();
+  }
+  context.restore();
+
+  context.save();
+  context.strokeStyle = themeCssValue("--xy-board-stroke", "rgba(14, 165, 233, 0.72)");
+  context.lineWidth = 1.8;
+  context.strokeRect(boardRect.x, boardRect.y, boardRect.width, boardRect.height);
+  context.fillStyle = themeCssValue("--muted-strong", "#334155");
+  context.font = "11px ui-monospace, SFMono-Regular, Consolas, monospace";
+  context.textAlign = "center";
+  for (let x = Math.ceil(board.minX / step) * step; x <= board.maxX + 1e-7; x += step) {
+    const point = mapper.toScreen(x, board.minY);
+    context.fillText(formatXyNumber(x), point.x, Math.min(rect.height - 10, boardRect.y + boardRect.height + 18));
+  }
+  context.textAlign = "right";
+  for (let y = Math.ceil(board.minY / step) * step; y <= board.maxY + 1e-7; y += step) {
+    const point = mapper.toScreen(board.minX, y);
+    context.fillText(formatXyNumber(y), Math.max(26, boardRect.x - 8), point.y + 4);
+  }
+  context.fillStyle = "#dc2626";
+  context.font = "700 12px system-ui, sans-serif";
+  context.textAlign = "left";
+  context.fillText("x", boardRect.x + boardRect.width - 14, Math.min(rect.height - 10, boardRect.y + boardRect.height + 28));
+  context.fillStyle = "#059669";
+  context.fillText("y", Math.max(12, boardRect.x - 23), boardRect.y + 12);
+  context.restore();
+}
+
+function drawXyEmptyCanvas(context, mapper, board) {
+  const center = mapper.toScreen((board.minX + board.maxX) / 2, (board.minY + board.maxY) / 2);
+  const width = Math.min(260, board.width * mapper.scale * 0.5);
+  const height = Math.min(92, board.height * mapper.scale * 0.26);
+  context.save();
+  context.setLineDash([7, 6]);
+  context.strokeStyle = themeCssValue("--xy-grid-major", "rgba(14, 165, 233, 0.25)");
+  context.strokeRect(center.x - width / 2, center.y - height / 2, width, height);
+  context.restore();
+}
+
+function drawXyRectangle(context, mapper, rectangle, selected, hovered, board, selectedVertexIndex = null) {
+  const corners = xyRectangleCorners(rectangle).map(([x, y]) => mapper.toScreen(x, y));
+  const color = colorForBox(rectangle.id);
+  const bounds = xyRectangleBounds(rectangle);
+  const outside = bounds.minX < board.minX - 1e-7 || bounds.maxX > board.maxX + 1e-7 || bounds.minY < board.minY - 1e-7 || bounds.maxY > board.maxY + 1e-7;
+  context.save();
+  context.beginPath();
+  corners.forEach((point, index) => {
+    if (index === 0) context.moveTo(point.x, point.y);
+    else context.lineTo(point.x, point.y);
+  });
+  context.closePath();
+  context.shadowColor = selected ? "rgba(245, 158, 11, 0.26)" : "rgba(15, 23, 42, 0.16)";
+  context.shadowBlur = selected || hovered ? 18 : 8;
+  context.shadowOffsetY = 4;
+  context.fillStyle = rgbaColor(color, selected ? 0.76 : hovered ? 0.64 : 0.52);
+  context.fill();
+  context.shadowColor = "transparent";
+  context.strokeStyle = outside ? themeCssValue("--xy-handle", "#f59e0b") : selected ? themeCssValue("--xy-handle", "#f59e0b") : rgbaColor(lightenColor(color, 0.34), 0.98);
+  context.lineWidth = selected ? 2.6 : hovered ? 2 : 1.2;
+  if (outside) context.setLineDash([7, 5]);
+  context.stroke();
+  context.setLineDash([]);
+  const center = mapper.toScreen(rectangle.x, rectangle.y);
+  const screenWidth = rectangle.width * mapper.scale;
+  const screenHeight = rectangle.height * mapper.scale;
+  if (screenWidth > 54 && screenHeight > 28) {
+    context.save();
+    context.translate(center.x, center.y);
+    context.rotate(Number(rectangle.rotation) * Math.PI / 180);
+    context.fillStyle = "rgba(255, 255, 255, 0.88)";
+    context.font = "700 12px system-ui, sans-serif";
+    context.textAlign = "center";
+    context.fillText(rectangle.id, 0, -2);
+    context.fillStyle = "rgba(255, 255, 255, 0.72)";
+    context.font = "10px ui-monospace, SFMono-Regular, Consolas, monospace";
+    context.fillText(`${formatXyNumber(rectangle.width)} × ${formatXyNumber(rectangle.height)}`, 0, 14);
+    context.restore();
+  }
+  drawXyVertices(context, corners, mapper.toScreen(rectangle.x, rectangle.y), rectangle, selected, hovered, selectedVertexIndex);
+  if (selected) {
+    drawXyRotationHandle(context, mapper, rectangle);
+  }
+  context.restore();
+}
+
+function drawXyVertices(context, corners, center, rectangle, selected, hovered, selectedVertexIndex) {
+  const color = colorForBox(rectangle.id);
+  const vertexStroke = themeCssValue("--xy-vertex-stroke", "rgba(255, 255, 255, 0.92)");
+  const vertexColor = themeCssValue("--xy-vertex", "#0ea5e9");
+  const activeColor = themeCssValue("--xy-vertex-selected", "#f59e0b");
+  const validSelectedVertex = xyValidVertexIndex(selectedVertexIndex);
+  corners.forEach((point, index) => {
+    const active = selected && validSelectedVertex === index;
+    const radius = active ? 6 : selected ? 4.5 : hovered ? 4 : 3.5;
+    context.save();
+    context.shadowColor = active ? "rgba(245, 158, 11, 0.36)" : "transparent";
+    context.shadowBlur = active ? 9 : 0;
+    context.fillStyle = active
+      ? activeColor
+      : selected || hovered
+        ? vertexColor
+        : rgbaColor(lightenColor(color, 0.42), 0.98);
+    context.strokeStyle = vertexStroke;
+    context.lineWidth = active ? 2 : 1.2;
+    context.beginPath();
+    context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    if (selected) {
+      const horizontalOffset = point.x < center.x ? -8 : 8;
+      const verticalOffset = point.y < center.y ? -8 : 8;
+      context.shadowColor = "transparent";
+      context.fillStyle = active ? activeColor : themeCssValue("--xy-vertex-label", "#0369a1");
+      context.font = "700 10px ui-monospace, SFMono-Regular, Consolas, monospace";
+      context.textAlign = horizontalOffset < 0 ? "right" : "left";
+      context.textBaseline = verticalOffset < 0 ? "bottom" : "top";
+      context.fillText(`P${index + 1}`, point.x + horizontalOffset, point.y + verticalOffset);
+    }
+    context.restore();
+  });
+}
+
+function drawXyRotationHandle(context, mapper, rectangle) {
+  const edge = xyRotatePoint(rectangle.x, rectangle.y, 0, rectangle.height / 2, rectangle.rotation);
+  const handle = xyRotationHandleWorld(rectangle, mapper);
+  const edgePoint = mapper.toScreen(edge.x, edge.y);
+  const handlePoint = mapper.toScreen(handle.x, handle.y);
+  context.save();
+  context.strokeStyle = themeCssValue("--xy-handle", "#f59e0b");
+  context.lineWidth = 1.4;
+  context.setLineDash([4, 4]);
+  context.beginPath();
+  context.moveTo(edgePoint.x, edgePoint.y);
+  context.lineTo(handlePoint.x, handlePoint.y);
+  context.stroke();
+  context.setLineDash([]);
+  context.fillStyle = themeCssValue("--xy-handle-soft", "rgba(245, 158, 11, 0.18)");
+  context.beginPath();
+  context.arc(handlePoint.x, handlePoint.y, 10, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = themeCssValue("--xy-handle", "#f59e0b");
+  context.beginPath();
+  context.arc(handlePoint.x, handlePoint.y, 5, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
+}
+
+function xyRectangleCorners(rectangle) {
+  return [
+    xyRotatePoint(rectangle.x, rectangle.y, -rectangle.width / 2, -rectangle.height / 2, rectangle.rotation),
+    xyRotatePoint(rectangle.x, rectangle.y, rectangle.width / 2, -rectangle.height / 2, rectangle.rotation),
+    xyRotatePoint(rectangle.x, rectangle.y, rectangle.width / 2, rectangle.height / 2, rectangle.rotation),
+    xyRotatePoint(rectangle.x, rectangle.y, -rectangle.width / 2, rectangle.height / 2, rectangle.rotation),
+  ].map((point) => [point.x, point.y]);
+}
+
+function xyRotatePoint(centerX, centerY, localX, localY, rotation) {
+  // XY 画布约定：正角度为顺时针，画布内部仍以 x 向右、y 向上计算。
+  const radians = -Number(rotation || 0) * Math.PI / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  return {
+    x: centerX + localX * cos - localY * sin,
+    y: centerY + localX * sin + localY * cos,
+  };
+}
+
+function xyRectangleBounds(rectangle) {
+  const corners = xyRectangleCorners(rectangle);
+  return {
+    minX: Math.min(...corners.map(([x]) => x)),
+    maxX: Math.max(...corners.map(([x]) => x)),
+    minY: Math.min(...corners.map(([, y]) => y)),
+    maxY: Math.max(...corners.map(([, y]) => y)),
+  };
+}
+
+function xyRotationHandleWorld(rectangle, mapper) {
+  return xyRotatePoint(rectangle.x, rectangle.y, 0, rectangle.height / 2 + 22 / mapper.scale, rectangle.rotation);
+}
+
+function xyDistance(first, second) {
+  return Math.hypot(first.x - second.x, first.y - second.y);
+}
+
+function xyValidVertexIndex(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const index = Number(value);
+  return Number.isInteger(index) && index >= 0 && index < 4 ? index : null;
+}
+
+function xyVertexAtScreen(screenPoint, layout, mapper) {
+  if (!screenPoint || !layout || !mapper) {
+    return null;
+  }
+  const rectangles = layout.rectangles
+    .map((rectangle, index) => ({ rectangle, index }))
+    .sort((first, second) => {
+      const firstSelected = first.rectangle.id === layout.selectedId;
+      const secondSelected = second.rectangle.id === layout.selectedId;
+      if (firstSelected !== secondSelected) {
+        return firstSelected ? -1 : 1;
+      }
+      return second.index - first.index;
+    });
+  const hitRadius = 13;
+  let closest = null;
+  let closestDistance = hitRadius;
+  rectangles.forEach(({ rectangle }) => {
+    xyRectangleCorners(rectangle).forEach(([x, y], vertexIndex) => {
+      const point = mapper.toScreen(x, y);
+      const distance = xyDistance(screenPoint, point);
+      if (distance < closestDistance) {
+        closest = { rectangle, vertexIndex, distance };
+        closestDistance = distance;
+      }
+    });
+  });
+  return closest;
+}
+
+function xyPointInRectangle(point, rectangle) {
+  const radians = Number(rectangle.rotation || 0) * Math.PI / 180;
+  const dx = point.x - rectangle.x;
+  const dy = point.y - rectangle.y;
+  const localX = dx * Math.cos(radians) - dy * Math.sin(radians);
+  const localY = dx * Math.sin(radians) + dy * Math.cos(radians);
+  return Math.abs(localX) <= rectangle.width / 2 + 1e-7 && Math.abs(localY) <= rectangle.height / 2 + 1e-7;
+}
+
+function xyRectangleAtWorld(point, layout) {
+  return [...(layout?.rectangles ?? [])].reverse().find((rectangle) => xyPointInRectangle(point, rectangle)) ?? null;
+}
+
+function xyCanvasPoint(event) {
+  const point = canvasPoint(event, elements.xyModelCanvas);
+  return { x: point.x, y: point.y };
+}
+
+function xyWorldPoint(event, mapper) {
+  const point = xyCanvasPoint(event);
+  return mapper.toWorld(point.x, point.y);
+}
+
+function startXyPointer(event) {
+  if (event.button !== 0) {
+    return;
+  }
+  const layout = getXyLayout();
+  const rectangle = getSelectedXyRectangle();
+  const mapper = state.xyModel.mapper;
+  if (!layout || !mapper) {
+    return;
+  }
+  const screenPoint = xyCanvasPoint(event);
+  const worldPoint = mapper.toWorld(screenPoint.x, screenPoint.y);
+  let target = null;
+  let mode = "move";
+  let vertexIndex = null;
+  if (rectangle) {
+    const handlePoint = mapper.toScreen(xyRotationHandleWorld(rectangle, mapper).x, xyRotationHandleWorld(rectangle, mapper).y);
+    if (xyDistance(screenPoint, handlePoint) <= 14) {
+      target = rectangle;
+      mode = "rotate";
+    }
+  }
+  if (!target) {
+    const vertexHit = xyVertexAtScreen(screenPoint, layout, mapper);
+    if (vertexHit) {
+      target = vertexHit.rectangle;
+      mode = "vertex";
+      vertexIndex = vertexHit.vertexIndex;
+    }
+  }
+  if (!target) {
+    target = xyRectangleAtWorld(worldPoint, layout);
+  }
+  if (!target) {
+    selectXyRectangle(null);
+    elements.xyModelCanvas.style.cursor = "crosshair";
+    return;
+  }
+  const selectionChanged = layout.selectedId !== target.id
+    || (mode === "vertex" && layout.selectedVertexIndex !== vertexIndex)
+    || (mode === "move" && layout.selectedVertexIndex !== null);
+  if (layout.selectedId !== target.id) {
+    layout.selectedId = target.id;
+  }
+  if (mode === "vertex") {
+    layout.selectedVertexIndex = vertexIndex;
+    state.xyModel.hoveredId = null;
+    if (selectionChanged) {
+      renderXyInspector();
+      drawXyModel();
+    }
+    elements.xyModelCanvas.focus();
+    elements.xyModelCanvas.style.cursor = "pointer";
+    event.preventDefault();
+    return;
+  }
+  if (mode === "move") {
+    layout.selectedVertexIndex = null;
+  }
+  if (selectionChanged) {
+    renderXyInspector();
+    drawXyModel();
+  }
+  const pointer = state.xyModel.pointer;
+  pointer.active = true;
+  pointer.mode = mode;
+  pointer.pointerId = event.pointerId;
+  pointer.rectangleId = target.id;
+  pointer.offsetX = worldPoint.x - target.x;
+  pointer.offsetY = worldPoint.y - target.y;
+  pointer.startAngle = Math.atan2(worldPoint.y - target.y, worldPoint.x - target.x);
+  pointer.startRotation = Number(target.rotation) || 0;
+  pointer.historyRecorded = false;
+  elements.xyModelCanvas.setPointerCapture(event.pointerId);
+  elements.xyModelCanvas.focus();
+  elements.xyModelCanvas.style.cursor = mode === "rotate" ? "crosshair" : "grabbing";
+  event.preventDefault();
+}
+
+function moveXyPointer(event) {
+  const pointer = state.xyModel.pointer;
+  if (!pointer.active) {
+    updateXyCanvasHover(event);
+    return;
+  }
+  const layout = getXyLayout();
+  const rectangle = layout?.rectangles.find((item) => item.id === pointer.rectangleId);
+  const mapper = state.xyModel.mapper;
+  if (!layout || !rectangle || !mapper) {
+    return;
+  }
+  if (!pointer.historyRecorded) {
+    recordXyHistory(layout);
+    pointer.historyRecorded = true;
+  }
+  const worldPoint = xyWorldPoint(event, mapper);
+  if (pointer.mode === "rotate") {
+    const currentAngle = Math.atan2(worldPoint.y - rectangle.y, worldPoint.x - rectangle.x);
+    let rotation = pointer.startRotation - normalizeXyAngle(currentAngle - pointer.startAngle) * 180 / Math.PI;
+    if (event.shiftKey) {
+      rotation = Math.round(rotation / 15) * 15;
+    }
+    rectangle.rotation = roundXyValue(normalizeXyDegrees(rotation));
+  } else {
+    rectangle.x = roundXyValue(worldPoint.x - pointer.offsetX);
+    rectangle.y = roundXyValue(worldPoint.y - pointer.offsetY);
+  }
+  syncXyInspectorInputs(rectangle);
+  renderXyRectangleList();
+  updateXyModelStats(layout, xyBoardDimensions());
+  updateXyRectangleStatus(rectangle, xyBoardDimensions());
+  drawXyModel();
+  event.preventDefault();
+}
+
+function normalizeXyAngle(radians) {
+  let angle = radians;
+  while (angle > Math.PI) angle -= Math.PI * 2;
+  while (angle < -Math.PI) angle += Math.PI * 2;
+  return angle;
+}
+
+function normalizeXyDegrees(degrees) {
+  let value = Number(degrees) || 0;
+  value %= 360;
+  if (value > 180) value -= 360;
+  if (value < -180) value += 360;
+  return value;
+}
+
+function endXyPointer(event) {
+  const pointer = state.xyModel.pointer;
+  if (!pointer.active) {
+    return;
+  }
+  if (event.pointerId !== undefined && elements.xyModelCanvas.hasPointerCapture(event.pointerId)) {
+    elements.xyModelCanvas.releasePointerCapture(event.pointerId);
+  }
+  pointer.active = false;
+  pointer.mode = null;
+  pointer.pointerId = null;
+  pointer.rectangleId = null;
+  pointer.historyRecorded = false;
+  elements.xyModelCanvas.style.cursor = "crosshair";
+  renderXyInspector();
+  drawXyModel();
+}
+
+function resetXyRotationSlider(event) {
+  const layout = getXyLayout();
+  const rectangle = getSelectedXyRectangle();
+  if (!layout || !rectangle || Math.abs(Number(rectangle.rotation) || 0) <= 1e-7) {
+    return;
+  }
+  state.xyModel.editSession = null;
+  recordXyHistory(layout);
+  rectangle.rotation = 0;
+  syncXyInspectorInputs(rectangle);
+  renderXyInspector();
+  drawXyModel();
+  event.preventDefault();
+}
+
+function updateXyCanvasHover(event) {
+  const layout = getXyLayout();
+  const mapper = state.xyModel.mapper;
+  if (!layout || !mapper || !event) {
+    if (state.xyModel.hoveredId !== null) {
+      state.xyModel.hoveredId = null;
+      drawXyModel();
+    }
+    if (elements.xyModelCanvas) {
+      elements.xyModelCanvas.style.cursor = "crosshair";
+    }
+    return;
+  }
+  const screenPoint = xyCanvasPoint(event);
+  const selected = getSelectedXyRectangle();
+  if (selected) {
+    const handle = mapper.toScreen(xyRotationHandleWorld(selected, mapper).x, xyRotationHandleWorld(selected, mapper).y);
+    if (xyDistance(screenPoint, handle) <= 14) {
+      elements.xyModelCanvas.style.cursor = "crosshair";
+      return;
+    }
+  }
+  const vertexHit = xyVertexAtScreen(screenPoint, layout, mapper);
+  const target = vertexHit?.rectangle ?? xyRectangleAtWorld(mapper.toWorld(screenPoint.x, screenPoint.y), layout);
+  elements.xyModelCanvas.style.cursor = vertexHit ? "pointer" : target ? "grab" : "crosshair";
+  if (state.xyModel.hoveredId !== (target?.id ?? null)) {
+    state.xyModel.hoveredId = target?.id ?? null;
+    drawXyModel();
+  }
+}
+
+function zoomXyCanvas(event) {
+  event.preventDefault();
+  setXyZoom(state.xyModel.zoom * (event.deltaY < 0 ? 1.1 : 0.9));
+}
+
+function setXyZoom(value) {
+  state.xyModel.zoom = clamp(Number(value), 0.65, 1.8);
+  updateXyZoomOutput();
+  drawXyModel();
+}
+
+function updateXyZoomOutput() {
+  if (elements.xyZoomValue) {
+    elements.xyZoomValue.textContent = `${Math.round(state.xyModel.zoom * 100)}%`;
+  }
+}
+
+function handleXyCanvasKeydown(event) {
+  const rectangle = getSelectedXyRectangle();
+  const layout = getXyLayout();
+  if (!layout || !rectangle) {
+    return;
+  }
+  if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    deleteSelectedXyRectangle();
+    return;
+  }
+  const step = event.shiftKey ? 10 : 1;
+  const deltas = {
+    ArrowLeft: { x: -step, y: 0 },
+    ArrowRight: { x: step, y: 0 },
+    ArrowUp: { x: 0, y: step },
+    ArrowDown: { x: 0, y: -step },
+  };
+  const delta = deltas[event.key];
+  if (!delta) {
+    return;
+  }
+  event.preventDefault();
+  if (!event.repeat) {
+    recordXyHistory(layout);
+  }
+  rectangle.x += delta.x;
+  rectangle.y += delta.y;
+  syncXyInspectorInputs(rectangle);
+  renderXyRectangleList();
+  updateXyRectangleStatus(rectangle, xyBoardDimensions());
+  drawXyModel();
+}
+
+function formatXyNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return "--";
+  }
+  if (Object.is(number, -0)) {
+    return "0";
+  }
+  return Number(number.toFixed(3)).toString();
+}
+
+function roundXyValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Number(number.toFixed(3)) : 0;
 }
 
 function renderContainerSelector(result) {
@@ -3764,10 +5050,10 @@ function selectContainer(containerId, options = {}) {
   const activeResult = getActiveResult();
   const activeInput = getActiveProfileInput();
   if (!options.preserveSelection) {
-    state.selectedInstanceId = activeResult?.placements?.[0]?.instance_id ?? null;
+    state.selectedInstanceId = null;
   }
   if (!activeResult?.placements?.some((placement) => placement.instance_id === state.selectedInstanceId)) {
-    state.selectedInstanceId = activeResult?.placements?.[0]?.instance_id ?? null;
+    state.selectedInstanceId = null;
   }
   if (activeInput) {
     configureSliceControl(activeInput.uld.length);
@@ -3982,6 +5268,7 @@ function togglePackingAnimation() {
   if (state.animation.active) {
     stopPackingAnimation();
     updateAnimationControls();
+    drawScene();
     return;
   }
   startPackingAnimation();
@@ -4009,14 +5296,22 @@ function startPackingAnimation() {
     updateAnimationControls();
     return;
   }
+  state.selectedInstanceId = null;
+  state.hoveredInstanceId = null;
+  state.animation.highlightedInstanceId = null;
+  state.focusedBoxId = null;
+  renderSelectedBoxDetails();
+  updateSelectedRow();
+  hideSceneTooltip();
   if (state.animation.visibleCount === null || state.animation.visibleCount >= total) {
     state.animation.elapsed = 0;
     state.animation.visibleCount = 0;
   }
   state.animation.active = true;
   state.animation.startedAt = performance.now();
-  state.animation.frameId = requestAnimationFrame(animationFrame);
   updateAnimationControls();
+  drawAllViews();
+  state.animation.frameId = requestAnimationFrame(animationFrame);
 }
 
 function stopPackingAnimation() {
@@ -4028,6 +5323,7 @@ function stopPackingAnimation() {
   }
   state.animation.active = false;
   state.animation.frameId = null;
+  state.animation.highlightedInstanceId = null;
 }
 
 function animationFrame(timestamp) {
@@ -4035,6 +5331,8 @@ function animationFrame(timestamp) {
   const total = activeResult?.placements?.length ?? 0;
   const elapsed = animationElapsedAt(timestamp);
   state.animation.visibleCount = Math.min(total, Math.floor(elapsed / BOX_ANIMATION_INTERVAL_MS));
+  const visiblePlacements = visibleScenePlacements(activeResult);
+  state.animation.highlightedInstanceId = visiblePlacements.at(-1)?.instance_id ?? null;
   drawScene();
 
   if (state.animation.visibleCount >= total) {
@@ -4042,6 +5340,7 @@ function animationFrame(timestamp) {
     state.animation.active = false;
     state.animation.frameId = null;
     updateAnimationControls();
+    drawScene();
     return;
   }
 
@@ -4061,6 +5360,7 @@ function resetAnimationState({ showFull }) {
   stopPackingAnimation();
   state.animation.elapsed = 0;
   state.animation.visibleCount = showFull ? null : 0;
+  state.animation.highlightedInstanceId = null;
   updateAnimationControls();
 }
 
@@ -4085,6 +5385,7 @@ function drawAllViews() {
   drawScene();
   drawProjectionViews();
   drawYzProfileQuery();
+  drawXyModel();
 }
 
 function drawScene() {
@@ -4135,13 +5436,14 @@ function drawThreeScene() {
   const placements = activeResult?.placements ?? EMPTY_PLACEMENTS;
   const visiblePlacements = activeResult ? visibleScenePlacements(activeResult) : EMPTY_PLACEMENTS;
   const latestAnimatedId = currentAnimatedInstanceId(visiblePlacements);
+  const animationHighlightActive = state.animation.active || Boolean(latestAnimatedId);
   state.threeViewer.resize();
   state.threeViewer.setScene({
     input: activeInput,
     placements,
     visiblePlacements,
-    selectedInstanceId: state.selectedInstanceId,
-    hoveredInstanceId: state.hoveredInstanceId,
+    selectedInstanceId: animationHighlightActive ? null : state.selectedInstanceId,
+    hoveredInstanceId: animationHighlightActive ? null : state.hoveredInstanceId,
     latestAnimatedId,
     displayMode: state.sceneDisplayMode,
   });
@@ -4149,6 +5451,15 @@ function drawThreeScene() {
 }
 
 function handleThreeViewerHover(placement, event) {
+  if (state.animation.active || state.animation.highlightedInstanceId) {
+    const changed = state.hoveredInstanceId !== null;
+    state.hoveredInstanceId = null;
+    hideSceneTooltip();
+    if (changed) {
+      drawScene();
+    }
+    return;
+  }
   const nextInstanceId = placement?.instance_id ?? null;
   const changed = state.hoveredInstanceId !== nextInstanceId;
   state.hoveredInstanceId = nextInstanceId;
@@ -4369,8 +5680,8 @@ function drawSliceLine(context, mapper, verticalMax) {
   context.moveTo(start.x, start.y);
   context.lineTo(end.x, end.y);
   context.stroke();
-  context.fillStyle = "#fef08a";
-  context.font = "12px system-ui, sans-serif";
+  context.fillStyle = themeCssValue("--text-strong", "#0f172a");
+  context.font = "700 12px system-ui, sans-serif";
   context.fillText(`x=${formatNumber(state.sliceX)}`, start.x + 6, 18);
   context.restore();
 }
@@ -4644,8 +5955,9 @@ function drawAxisArrow(context, start, end) {
 function createBoxFaces(placement, latestAnimatedId = null) {
   const vertices = boxVertices(placement);
   const color = colorForBox(placement.box_id);
-  const selected = placement.instance_id === state.selectedInstanceId;
-  const hovered = placement.instance_id === state.hoveredInstanceId;
+  const animationHighlightActive = state.animation.active || Boolean(latestAnimatedId);
+  const selected = !animationHighlightActive && placement.instance_id === state.selectedInstanceId;
+  const hovered = !animationHighlightActive && placement.instance_id === state.hoveredInstanceId;
   const animated = placement.instance_id === latestAnimatedId;
   return [
     face([vertices.a, vertices.b, vertices.c, vertices.d], color, selected, hovered, animated, placement.instance_id, 0.52),
@@ -4694,7 +6006,7 @@ function boxEdges(vertices) {
 }
 
 function face(points, color, selected, hovered, animated, instanceId, alpha) {
-  const style = boxFaceStyle(color, selected || animated, hovered, alpha);
+  const style = animated ? boxAnimatedFaceStyle(color, alpha) : boxFaceStyle(color, selected, hovered, alpha);
   return {
     points,
     instanceId,
@@ -4707,21 +6019,21 @@ function face(points, color, selected, hovered, animated, instanceId, alpha) {
 
 function boxFaceStyle(color, selected, hovered, alpha) {
   if (selected) {
-    const selectedColor = lightenColor(color, 0.1);
+    const selectedColor = lightenColor(color, 0.08);
     return {
       fill: rgbaColor(selectedColor, 0.98),
-      stroke: "#fef08a",
-      lineWidth: 3.4,
-      shadow: "rgba(254, 240, 138, 0.55)",
+      stroke: "#ef4444",
+      lineWidth: 3.2,
+      shadow: "rgba(239, 68, 68, 0.5)",
     };
   }
   if (hovered) {
-    const hoveredColor = lightenColor(color, 0.16);
+    const hoveredColor = lightenColor(color, 0.12);
     return {
       fill: rgbaColor(hoveredColor, 0.92),
-      stroke: rgbaColor(lightenColor(color, 0.62), 1),
-      lineWidth: 2.4,
-      shadow: "rgba(226, 232, 240, 0.35)",
+      stroke: "#f87171",
+      lineWidth: 2.6,
+      shadow: "rgba(248, 113, 113, 0.35)",
     };
   }
   return {
@@ -4729,6 +6041,16 @@ function boxFaceStyle(color, selected, hovered, alpha) {
     stroke: rgbaColor(lightenColor(color, 0.38), 0.98),
     lineWidth: 1.45,
     shadow: "",
+  };
+}
+
+function boxAnimatedFaceStyle(color, alpha) {
+  const animatedColor = lightenColor(color, 0.34);
+  return {
+    fill: rgbaColor(animatedColor, Math.max(alpha, 0.99)),
+    stroke: "#dc2626",
+    lineWidth: 3.4,
+    shadow: "rgba(220, 38, 38, 0.58)",
   };
 }
 
@@ -4745,20 +6067,26 @@ function drawBoxWireframes(context, placements, projector, latestAnimatedId) {
 
 function drawBoxWireframe(context, placement, projector, latestAnimatedId, mutedStroke) {
   const vertices = boxVertices(placement);
-  const highlighted =
-    placement.instance_id === state.selectedInstanceId ||
-    placement.instance_id === state.hoveredInstanceId ||
-    placement.instance_id === latestAnimatedId;
-  context.strokeStyle = highlighted ? "rgba(255, 255, 255, 0.88)" : mutedStroke;
-  context.lineWidth = highlighted ? 2.2 : 0.75;
+  const animationHighlightActive = state.animation.active || Boolean(latestAnimatedId);
+  const highlighted = animationHighlightActive
+    ? placement.instance_id === latestAnimatedId
+    : placement.instance_id === state.selectedInstanceId || placement.instance_id === state.hoveredInstanceId;
+  context.strokeStyle = highlighted ? (animationHighlightActive ? "#dc2626" : "#ef4444") : mutedStroke;
+  context.lineWidth = highlighted ? (animationHighlightActive ? 3.4 : 3) : 0.75;
+  if (highlighted) {
+    context.shadowColor = animationHighlightActive ? "rgba(220, 38, 38, 0.58)" : "rgba(239, 68, 68, 0.46)";
+    context.shadowBlur = animationHighlightActive ? 7 : 5;
+  }
   boxEdges(vertices).forEach(([start, end]) => drawPolyline(context, [start, end], projector));
+  context.shadowBlur = 0;
 }
 
 function currentAnimatedInstanceId(visiblePlacements) {
-  if (state.animation.visibleCount === null || visiblePlacements.length === 0) {
+  const highlightedId = state.animation.highlightedInstanceId;
+  if (!highlightedId || visiblePlacements.length === 0) {
     return null;
   }
-  return visiblePlacements[visiblePlacements.length - 1].instance_id;
+  return visiblePlacements.some((placement) => placement.instance_id === highlightedId) ? highlightedId : null;
 }
 
 function drawFaces(context, faces, projector, hitRegions = null) {
@@ -4844,6 +6172,10 @@ function selectPlacement(instanceId, options = {}) {
   if (!instanceId || !placement) {
     return;
   }
+  if (state.animation.active) {
+    stopPackingAnimation();
+  }
+  state.animation.highlightedInstanceId = null;
   state.selectedInstanceId = instanceId;
   if (options.focusSameBoxType) {
     setSceneBoxFocus(placement.box_id);
@@ -5062,7 +6394,12 @@ function startPointerDrag(event) {
   state.pointer.x = event.clientX;
   state.pointer.y = event.clientY;
   state.pointer.moved = false;
+  const hadHover = Boolean(state.hoveredInstanceId);
+  state.hoveredInstanceId = null;
   hideSceneTooltip();
+  if (hadHover) {
+    drawScene();
+  }
 }
 
 function movePointerDrag(event) {
